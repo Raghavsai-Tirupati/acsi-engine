@@ -86,6 +86,7 @@ class FakeClient:
         fail_rate_limit_every: int | None = None,
         retired_models: set[str] | None = None,
         rejected_prompt_predicate: PromptPredicate | None = None,
+        served_model_override: str | None = None,
     ) -> None:
         self.seed = seed
         self.noise = noise
@@ -93,6 +94,7 @@ class FakeClient:
         self.fail_rate_limit_every = fail_rate_limit_every
         self.retired_models = retired_models or set()
         self.rejected_prompt_predicate = rejected_prompt_predicate
+        self.served_model_override = served_model_override
         self.call_count = 0
 
     def complete(self, request: CompletionRequest) -> CompletionResponse:
@@ -125,7 +127,7 @@ class FakeClient:
             finish_reason="stop",
             usage={"input_tokens": input_tokens, "output_tokens": output_tokens},
             latency_ms=latency_ms,
-            served_model=request.model,
+            served_model=self.served_model_override or request.model,
         )
 
     def _base_text(self, prompt: str, prompt_hash: str, sample_index: int) -> str:

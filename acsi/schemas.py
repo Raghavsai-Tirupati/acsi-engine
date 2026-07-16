@@ -153,6 +153,11 @@ class PatchConfig(StrictModel):
     min_fix_rate: float = Field(default=0.8, ge=0, le=1)
 
 
+class MonitorConfig(StrictModel):
+    suite_size: int = Field(default=150, gt=0)
+    epsilon_pp: float = Field(default=0.0, ge=0)
+
+
 class WorkloadManifest(StrictModel):
     workload: str
     baseline: ProviderModel
@@ -165,6 +170,7 @@ class WorkloadManifest(StrictModel):
     budget: BudgetConfig
     clustering: ClusteringConfig = Field(default_factory=ClusteringConfig)
     patch: PatchConfig = Field(default_factory=PatchConfig)
+    monitor: MonitorConfig = Field(default_factory=MonitorConfig)
 
 
 class ContentHash(StrictModel):
