@@ -203,6 +203,8 @@ class RunManifest(StrictModel):
     param_transformations: list[ParamTransformation] = Field(default_factory=list)
     wall_clock_seconds: float = Field(ge=0)
     cost_ledger: list[CostLedgerEntry] = Field(default_factory=list)
+    run_started_at: str | None = None
+    stages: dict[str, Any] = Field(default_factory=dict)
 
 
 class Coverage(StrictModel):

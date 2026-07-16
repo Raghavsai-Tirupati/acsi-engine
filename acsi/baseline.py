@@ -70,7 +70,12 @@ async def run_baseline(
             config=config,
         )
 
-    responses_hash = write_responses_jsonl(store, config.run_id, run_dir / "responses.jsonl")
+    responses_hash = write_responses_jsonl(
+        store,
+        config.run_id,
+        run_dir / "responses.jsonl",
+        phase=config.phase,
+    )
     run_manifest = build_run_manifest(
         run_id=config.run_id,
         manifest_path=manifest_path,
@@ -82,6 +87,7 @@ async def run_baseline(
         result=result,
         wall_clock_seconds=clock.elapsed_seconds(),
         degraded=degraded,
+        phase=config.phase,
     )
     run_hash = write_run_manifest(run_dir / "run.json", run_manifest)
 
@@ -277,6 +283,7 @@ def _write_degraded_baseline_calls(
             response=response,
             cost_usd=0.0,
             retry_count=0,
+            phase=config.phase,
         )
         result.completed += 1
         result.param_transforms.extend(transforms)

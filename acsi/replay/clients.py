@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import time
 from collections.abc import Callable, Sequence
@@ -110,7 +111,7 @@ class FakeClient:
             raise PermanentError("Provider rejected this prompt.", run_level=False)
 
         prompt_hash = prompt_sha256(prompt)
-        text = self._base_text(prompt_hash, request.sample_index)
+        text = self._base_text(prompt, prompt_hash, request.sample_index)
         for regression in self.regressions:
             if regression.predicate(prompt):
                 text = regression.transform(prompt, text)
@@ -127,10 +128,12 @@ class FakeClient:
             served_model=request.model,
         )
 
-    def _base_text(self, prompt_hash: str, sample_index: int) -> str:
+    def _base_text(self, prompt: str, prompt_hash: str, sample_index: int) -> str:
         variant = "summary"
         if self._noise_decision(prompt_hash, sample_index):
             variant = "paraphrased summary"
+        if "json" in prompt.lower():
+            return _json_summary(prompt_hash, variant)
         return f"{variant}: {prompt_hash[:16]}"
 
     def _noise_decision(self, prompt_hash: str, sample_index: int) -> bool:
@@ -180,6 +183,20 @@ class LiveClient:
 
 def prompt_sha256(prompt: str) -> str:
     return hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+
+
+def _json_summary(prompt_hash: str, variant: str) -> str:
+    return json.dumps(
+        {
+            "availability": "fixture availability",
+            "candidate": prompt_hash[:12],
+            "next_step": "schedule coordinator screen",
+            "risks": [],
+            "role_fit": variant,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 def plausible_token_count(text: str | None) -> int:

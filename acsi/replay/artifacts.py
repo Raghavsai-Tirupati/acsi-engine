@@ -37,8 +37,11 @@ def build_run_manifest(
     result: ReplayResult,
     wall_clock_seconds: float,
     degraded: bool = False,
+    phase: str = "replay",
+    run_started_at: str | None = None,
+    stages: dict[str, object] | None = None,
 ) -> RunManifest:
-    calls = store.done_calls(run_id)
+    calls = store.done_calls(run_id, phase=phase)
     tokens_in = sum(call.usage.get("input_tokens", 0) for call in calls)
     tokens_out = sum(call.usage.get("output_tokens", 0) for call in calls)
     cost_usd = sum(call.cost_usd for call in calls)
@@ -49,19 +52,21 @@ def build_run_manifest(
         engine_version=__version__,
         seeds={"replay": seed},
         endpoints={provider: endpoint},
-        served_models=store.served_models(run_id),
+        served_models=store.served_models(run_id, phase=phase),
         degraded=degraded,
         param_transformations=_param_transformations(result.param_transforms),
         wall_clock_seconds=wall_clock_seconds,
         cost_ledger=[
             CostLedgerEntry(
-                stage="replay",
+                stage=phase,
                 provider=provider,
                 tokens_in=tokens_in,
                 tokens_out=tokens_out,
                 usd=cost_usd,
             )
         ],
+        run_started_at=run_started_at,
+        stages=stages or {},
     )
 
 

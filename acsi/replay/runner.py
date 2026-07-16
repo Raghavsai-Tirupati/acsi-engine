@@ -35,6 +35,7 @@ class ProviderRateLimit:
 @dataclass(frozen=True)
 class ReplayConfig:
     run_id: str
+    phase: str = "replay"
     seed: int = 42
     concurrency: int = 4
     max_attempts: int = 5
@@ -131,7 +132,10 @@ async def replay(
     config: ReplayConfig,
 ) -> ReplayResult:
     store.initialize()
-    result = ReplayResult(run_id=config.run_id, cost_usd=store.total_cost(config.run_id))
+    result = ReplayResult(
+        run_id=config.run_id,
+        cost_usd=store.total_cost(config.run_id, phase=config.phase),
+    )
     budget = BudgetTracker(config.max_cost_usd, spent_usd=result.cost_usd)
     semaphore = asyncio.Semaphore(config.concurrency)
     provider_buckets = _provider_buckets(config)
@@ -151,7 +155,7 @@ async def replay(
             sample_index,
         )
         result.param_transforms.extend(transforms)
-        cached = store.get_done(config.run_id, trace_id, sample_index)
+        cached = store.get_done(config.run_id, trace_id, sample_index, phase=config.phase)
         if cached:
             result.cache_hits += 1
             result.completed += 1
@@ -201,6 +205,7 @@ async def replay(
                     response=response,
                     cost_usd=actual_cost,
                     retry_count=retry_count,
+                    phase=config.phase,
                 )
                 result.completed += 1
                 result.dispatched += 1
@@ -227,6 +232,7 @@ async def replay(
                     prompt_hash=prompt_hash,
                     error=str(exc),
                     retry_count=retry_count,
+                    phase=config.phase,
                 )
                 result.errors += 1
             finally:
@@ -322,9 +328,15 @@ def estimate_call_cost_usd(
         return 0.0
 
 
-def write_responses_jsonl(store: ReplayStore, run_id: str, output_path: Path) -> str:
+def write_responses_jsonl(
+    store: ReplayStore,
+    run_id: str,
+    output_path: Path,
+    *,
+    phase: str = "replay",
+) -> str:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    lines = [_stored_call_json(call) for call in store.done_calls(run_id)]
+    lines = [_stored_call_json(call) for call in store.done_calls(run_id, phase=phase)]
     content = "".join(f"{line}\n" for line in lines)
     with output_path.open("w", encoding="utf-8", newline="\n") as handle:
         handle.write(content)
