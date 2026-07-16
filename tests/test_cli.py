@@ -18,6 +18,7 @@ def test_help_lists_m0_command_surface() -> None:
         "cluster",
         "judge",
         "cert",
+        "preflight",
         "review",
         "monitor",
         "verify",

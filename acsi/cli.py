@@ -69,6 +69,7 @@ from acsi.patch import (
     select_patch_target,
     write_patch_report,
 )
+from acsi.preflight import PreflightReport, run_preflight
 from acsi.publish import PublishError, publish_certificate
 from acsi.replay.artifacts import RunClock, build_run_manifest, write_run_manifest
 from acsi.replay.clients import FakeClient, LiveClient, RegressionRule
@@ -1653,7 +1654,7 @@ def judge(
         clients = {
             judge_spec.model: FakeJudge(model=judge_spec.model)
             if fake
-            else LiveJudge(judge_spec.model)
+            else LiveJudge.from_spec(judge_spec)
             for judge_spec in panel
         }
         result = run_pairwise_judging(
@@ -1867,6 +1868,52 @@ def monitor_run(
     else:
         console.print_json(data=payload)
     raise typer.Exit(result.exit_code)
+
+
+def _preflight_table(report: PreflightReport) -> Table:
+    table = Table(title="ACSI Preflight")
+    table.add_column("Role")
+    table.add_column("Provider")
+    table.add_column("Requested model")
+    table.add_column("Served model")
+    table.add_column("Latency ms")
+    table.add_column("Result")
+    for check in report.checks:
+        table.add_row(
+            check.role,
+            check.provider,
+            check.requested_model,
+            str(check.served_model or "-"),
+            str(check.latency_ms if check.latency_ms is not None else "-"),
+            "ok" if check.ok else (check.error or "error"),
+        )
+    return table
+
+
+@app.command()
+def preflight(
+    manifest: ManifestOption = Path("acsi.yaml"),
+    json_output: JsonOutputOption = False,
+) -> None:
+    """Verify provider credentials and reachability before spending on a run."""
+    try:
+        manifest_model = load_workload_manifest(manifest)
+        # Live path: real provider calls, gated on env keys being present.
+        report = run_preflight(manifest_model, client=LiveClient(), env=None, fake=False)
+    except (OSError, ValueError) as exc:
+        _fail(str(exc), json_output)
+
+    if json_output:
+        console.print_json(data=report.to_payload())
+    elif report.missing_keys:
+        console.print("Missing required provider environment variables:", style="red")
+        for name in report.missing_keys:
+            console.print(f"  - {name}")
+    else:
+        console.print(_preflight_table(report))
+        console.print(f"Estimated preflight cost: ${report.estimated_cost_usd:.6f}")
+
+    raise typer.Exit(0 if report.ok else 1)
 
 
 @app.command()
