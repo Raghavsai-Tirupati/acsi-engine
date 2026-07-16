@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Annotated
+from uuid import uuid4
 
 import typer
 from rich.console import Console
+from rich.table import Table
 
 from acsi import __version__
+from acsi.config import load_workload_manifest
 from acsi.importers.common import choose_output_path, inventory_table, write_import_artifacts
 from acsi.importers.jsonl import import_jsonl_paths
 from acsi.importers.supabase import (
@@ -15,7 +19,21 @@ from acsi.importers.supabase import (
     SupabaseImportError,
     import_supabase_records,
 )
-from acsi.schemas import export_json_schemas
+from acsi.replay.artifacts import RunClock, build_run_manifest, write_run_manifest
+from acsi.replay.clients import FakeClient, LiveClient
+from acsi.replay.runner import (
+    ReplayAbortError,
+    ReplayConfig,
+    ReplayInterrupted,
+    estimate_call_cost_usd,
+    estimated_output_tokens,
+    write_responses_jsonl,
+)
+from acsi.replay.runner import (
+    replay as replay_traces,
+)
+from acsi.replay.store import ReplayStore
+from acsi.schemas import ProviderModel, TraceRecord, export_json_schemas
 
 app = typer.Typer(
     help="ACSI replays production LLM traces and certifies model swaps against assertions.",
@@ -129,6 +147,78 @@ def _fail(message: str, json_output: bool) -> None:
     raise typer.Exit(1)
 
 
+def _target_model(default: ProviderModel, target: str | None) -> ProviderModel:
+    if not target:
+        return default
+    if "/" in target:
+        provider, model = target.split("/", 1)
+        return ProviderModel(provider=provider, model=model)
+    return ProviderModel(provider=default.provider, model=target)
+
+
+def _estimate_replay_cost(
+    traces: list[TraceRecord],
+    model: ProviderModel,
+    k_samples: int,
+    *,
+    fake: bool,
+) -> float:
+    total = 0.0
+    for trace in traces:
+        input_tokens = trace.response.usage.input_tokens if trace.response.usage else 0
+        output_tokens = estimated_output_tokens(trace)
+        total += estimate_call_cost_usd(
+            model.provider,
+            model.model,
+            input_tokens,
+            output_tokens,
+            fake=fake,
+        )
+    return total * k_samples
+
+
+def _confirm_replay(
+    traces: list[TraceRecord],
+    model: ProviderModel,
+    estimate_usd: float,
+) -> None:
+    table = Table(title="ACSI Replay Preflight")
+    table.add_column("Metric")
+    table.add_column("Value")
+    table.add_row("Traces", str(len(traces)))
+    table.add_row("Target", f"{model.provider}/{model.model}")
+    table.add_row("Estimated cost", f"${estimate_usd:.6f}")
+    console.print(table)
+    if not typer.confirm("Proceed with replay?"):
+        raise typer.Exit(1)
+
+
+def _resume_command(manifest: Path, traces: Path, run_id: str) -> str:
+    return f"acsi replay --manifest {manifest} --traces {traces} --run-id {run_id} --yes"
+
+
+def _replay_summary_table(payload: dict[str, object]) -> Table:
+    table = Table(title="ACSI Replay Summary")
+    table.add_column("Metric")
+    table.add_column("Value")
+    for key in (
+        "status",
+        "run_id",
+        "run_dir",
+        "completed",
+        "errors",
+        "cache_hits",
+        "dispatched",
+        "retry_count",
+        "cost_usd",
+        "halted_reason",
+        "responses_sha256",
+        "run_sha256",
+    ):
+        table.add_row(key, str(payload.get(key)))
+    return table
+
+
 @app.command()
 def run(
     manifest: ManifestOption = Path("acsi.yaml"),
@@ -160,11 +250,114 @@ def baseline(
 
 @app.command()
 def replay(
-    run_dir: RunDirOption = Path(".acsi"),
+    manifest: ManifestOption = Path("acsi.yaml"),
+    traces: Annotated[
+        Path | None,
+        typer.Option("--traces", help="Normalized TraceRecord JSONL path."),
+    ] = None,
+    target: Annotated[
+        str | None,
+        typer.Option("--target", help="Override target as provider/model or model."),
+    ] = None,
+    run_id: Annotated[
+        str | None,
+        typer.Option("--run-id", help="Resume or create this run id."),
+    ] = None,
+    k_samples: Annotated[int, typer.Option("--k-samples", help="Replay samples per trace.")] = 1,
+    seed: Annotated[int, typer.Option("--seed", help="Replay seed.")] = 42,
+    concurrency: Annotated[int, typer.Option("--concurrency", help="Replay concurrency.")] = 4,
+    max_cost: Annotated[
+        float | None,
+        typer.Option("--max-cost", help="Maximum replay spend in USD."),
+    ] = None,
+    yes: Annotated[bool, typer.Option("--yes", help="Approve replay execution.")] = False,
+    live: Annotated[
+        bool,
+        typer.Option("--live", help="Use LiveClient instead of FakeClient."),
+    ] = False,
+    fake_noise: Annotated[float, typer.Option("--fake-noise", help="FakeClient noise rate.")] = 0.0,
+    degraded: Annotated[
+        bool,
+        typer.Option("--degraded", help="M3 baseline degraded mode placeholder."),
+    ] = False,
     json_output: JsonOutputOption = False,
 ) -> None:
-    _ = run_dir
-    _emit_stub("replay", "M2", json_output)
+    if degraded:
+        _fail("--degraded is scheduled for M3 baseline mode.", json_output)
+    try:
+        manifest_model = load_workload_manifest(manifest)
+        target_model = _target_model(manifest_model.candidate, target)
+        traces_path = traces or Path(".acsi") / "traces" / f"{manifest_model.workload}.jsonl"
+        trace_records = import_jsonl_paths([traces_path]).records
+        if not trace_records:
+            _fail(f"No valid traces found in {traces_path}.", json_output)
+
+        active_run_id = run_id or str(uuid4())
+        run_dir = Path(".acsi") / "runs" / active_run_id
+        store = ReplayStore(run_dir / "replay.sqlite")
+        max_cost_usd = max_cost if max_cost is not None else manifest_model.budget.max_usd
+        estimate = _estimate_replay_cost(trace_records, target_model, k_samples, fake=not live)
+        if not yes:
+            if json_output:
+                _fail("Pass --yes to approve replay execution.", json_output)
+            _confirm_replay(trace_records, target_model, estimate)
+
+        client = LiveClient() if live else FakeClient(seed=seed, noise=fake_noise)
+        clock = RunClock()
+        result = asyncio.run(
+            replay_traces(
+                trace_records,
+                target_model,
+                k_samples,
+                client=client,
+                store=store,
+                config=ReplayConfig(
+                    run_id=active_run_id,
+                    seed=seed,
+                    concurrency=concurrency,
+                    max_cost_usd=max_cost_usd,
+                    resume_command=_resume_command(manifest, traces_path, active_run_id),
+                ),
+            )
+        )
+        responses_hash = write_responses_jsonl(store, active_run_id, run_dir / "responses.jsonl")
+        run_manifest = build_run_manifest(
+            run_id=active_run_id,
+            manifest_path=manifest,
+            traces_path=traces_path,
+            seed=seed,
+            provider=target_model.provider,
+            endpoint="live" if live else "fake",
+            store=store,
+            result=result,
+            wall_clock_seconds=clock.elapsed_seconds(),
+        )
+        run_hash = write_run_manifest(run_dir / "run.json", run_manifest)
+    except ReplayAbortError as exc:
+        _fail(str(exc), json_output)
+    except ReplayInterrupted as exc:
+        _fail(str(exc), json_output)
+    except (OSError, ValueError) as exc:
+        _fail(str(exc), json_output)
+
+    payload = {
+        "status": "ok" if not result.halted_reason else "halted",
+        "run_id": active_run_id,
+        "run_dir": str(run_dir),
+        "completed": result.completed,
+        "errors": result.errors,
+        "cache_hits": result.cache_hits,
+        "dispatched": result.dispatched,
+        "retry_count": result.retry_count,
+        "cost_usd": result.cost_usd,
+        "halted_reason": result.halted_reason,
+        "responses_sha256": responses_hash,
+        "run_sha256": run_hash,
+    }
+    if json_output:
+        console.print_json(data=payload)
+    else:
+        console.print(_replay_summary_table(payload))
 
 
 @app.command()

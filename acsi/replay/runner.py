@@ -145,6 +145,12 @@ async def replay(
             return
 
         trace_id = str(trace.trace_id)
+        request, prompt_hash, params_hash, transforms = build_completion_request(
+            trace,
+            model,
+            sample_index,
+        )
+        result.param_transforms.extend(transforms)
         cached = store.get_done(config.run_id, trace_id, sample_index)
         if cached:
             result.cache_hits += 1
@@ -156,12 +162,6 @@ async def replay(
         async with semaphore:
             if halt_event.is_set():
                 return
-            request, prompt_hash, params_hash, transforms = build_completion_request(
-                trace,
-                model,
-                sample_index,
-            )
-            result.param_transforms.extend(transforms)
             estimate_usd = estimate_call_cost_usd(
                 request.provider,
                 request.model,

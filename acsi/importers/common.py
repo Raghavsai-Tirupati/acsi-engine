@@ -186,13 +186,20 @@ def choose_output_path(
 def write_import_artifacts(result: ImportResult, output_path: Path) -> str:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     content = "".join(_record_json_line(record) + "\n" for record in result.records)
-    output_path.write_text(content, encoding="utf-8")
+    with output_path.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(content)
 
     digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
-    Path(f"{output_path}.sha256").write_text(f"{digest}\n", encoding="utf-8")
+    with Path(f"{output_path}.sha256").open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(f"{digest}\n")
 
     exclusions_content = "".join(exclusion.to_json_line() + "\n" for exclusion in result.exclusions)
-    Path(f"{output_path}.exclusions.jsonl").write_text(exclusions_content, encoding="utf-8")
+    with Path(f"{output_path}.exclusions.jsonl").open(
+        "w",
+        encoding="utf-8",
+        newline="\n",
+    ) as handle:
+        handle.write(exclusions_content)
     return digest
 
 
