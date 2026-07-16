@@ -13,6 +13,15 @@ from rich.table import Table
 from acsi import __version__
 from acsi.baseline import run_baseline as run_baseline_stage
 from acsi.config import load_workload_manifest
+from acsi.diff.clustering import (
+    AssertionFailure,
+    CandidatePairRecord,
+    FakeNamer,
+    build_regression_set,
+    cluster_regressions,
+    name_clusters,
+    write_clusters_json,
+)
 from acsi.importers.common import choose_output_path, inventory_table, write_import_artifacts
 from acsi.importers.jsonl import import_jsonl_paths
 from acsi.importers.supabase import (
@@ -30,12 +39,21 @@ from acsi.judge.clients import (
     LiveJudge,
     select_judge_panel,
 )
+from acsi.judge.ensemble import aggregate_pair_outcomes
 from acsi.judge.runner import (
     JudgeRunConfig,
     build_candidate_pairs,
     run_pairwise_judging,
     select_for_judging,
     write_judge_artifacts,
+)
+from acsi.patch import (
+    FakePatcher,
+    PatchReport,
+    detect_templates,
+    propose_patch,
+    select_patch_target,
+    write_patch_report,
 )
 from acsi.replay.artifacts import RunClock, build_run_manifest, write_run_manifest
 from acsi.replay.clients import FakeClient, LiveClient
@@ -51,7 +69,7 @@ from acsi.replay.runner import (
     replay as replay_traces,
 )
 from acsi.replay.store import ReplayStore, StoredCall
-from acsi.schemas import ProviderModel, TraceRecord, export_json_schemas
+from acsi.schemas import ProviderModel, Severity, TraceRecord, export_json_schemas
 
 app = typer.Typer(
     help="ACSI replays production LLM traces and certifies model swaps against assertions.",
@@ -334,6 +352,80 @@ def _votes_from_judgments(
     return votes
 
 
+def _load_judgment_rows(path: Path) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        for line in handle:
+            if line.strip():
+                rows.append(json.loads(line))
+    return rows
+
+
+def _load_assertion_failures(path: Path) -> dict[str, list[AssertionFailure]]:
+    if not path.exists():
+        return {}
+    failures: dict[str, list[AssertionFailure]] = {}
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            payload = json.loads(line)
+            pair_id = str(payload.get("pair_id") or payload.get("trace_id"))
+            failures.setdefault(pair_id, []).append(
+                AssertionFailure(
+                    assertion_id=str(payload["assertion_id"]),
+                    severity=Severity(str(payload["severity"])),
+                    baseline_passed=bool(payload.get("baseline_passed", True)),
+                    candidate_passed=bool(payload.get("candidate_passed", False)),
+                )
+            )
+    return failures
+
+
+def _text_by_trace(calls: list[StoredCall]) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for call in calls:
+        response = call.response or {}
+        values[call.trace_id] = str(response.get("text") or "")
+    return values
+
+
+def _candidate_records_for_clustering(
+    traces: list[TraceRecord],
+    baseline_calls: list[StoredCall],
+    candidate_calls: list[StoredCall],
+    judgment_rows: list[dict[str, object]],
+    assertion_failures: dict[str, list[AssertionFailure]],
+) -> list[CandidatePairRecord]:
+    votes = _votes_from_judgments(judgment_rows)
+    outcomes = aggregate_pair_outcomes(votes)
+    baseline_text = _text_by_trace(baseline_calls)
+    candidate_text = _text_by_trace(candidate_calls)
+    records: list[CandidatePairRecord] = []
+    for trace in sorted(traces, key=lambda item: str(item.trace_id)):
+        trace_id = str(trace.trace_id)
+        if trace_id not in baseline_text or trace_id not in candidate_text:
+            continue
+        records.append(
+            CandidatePairRecord(
+                pair_id=trace_id,
+                prompt=trace.request.messages[0].content,
+                baseline_response=baseline_text[trace_id],
+                candidate_response=candidate_text[trace_id],
+                ensemble_outcome=outcomes.get(trace_id, "equivalent"),
+                judge_reasons=[
+                    str(row.get("reason"))
+                    for row in judgment_rows
+                    if row.get("pair_id") == trace_id and row.get("reason")
+                ],
+                assertion_failures=assertion_failures.get(trace_id, []),
+                template_id=trace.meta.template_id,
+                system=trace.request.system,
+            )
+        )
+    return records
+
+
 @app.command()
 def run(
     manifest: ManifestOption = Path("acsi.yaml"),
@@ -576,6 +668,115 @@ def replay(
         console.print_json(data=payload)
     else:
         console.print(_replay_summary_table(payload))
+
+
+@app.command()
+def cluster(
+    run_id: Annotated[
+        str | None,
+        typer.Option("--run", help="Run id under --run-dir/runs to cluster."),
+    ] = None,
+    manifest: ManifestOption = Path("acsi.yaml"),
+    traces: Annotated[
+        Path | None,
+        typer.Option("--traces", help="Normalized TraceRecord JSONL path."),
+    ] = None,
+    run_dir: RunDirOption = Path(".acsi"),
+    propose_patches: Annotated[
+        bool,
+        typer.Option("--propose-patches", help="Propose patches for all clusters."),
+    ] = False,
+    json_output: JsonOutputOption = False,
+) -> None:
+    if run_id is None:
+        _fail("Pass --run with the run id to cluster.", json_output)
+    try:
+        manifest_model = load_workload_manifest(manifest)
+        traces_path = traces or run_dir / "traces" / f"{manifest_model.workload}.jsonl"
+        trace_records = import_jsonl_paths([traces_path]).records
+        active_run_dir = run_dir / "runs" / run_id
+        baseline_calls = _load_response_calls(
+            _first_existing(_baseline_response_paths(active_run_dir))
+        )
+        candidate_calls = _load_response_calls(
+            _first_existing(_candidate_response_paths(active_run_dir))
+        )
+        judgments = _load_judgment_rows(active_run_dir / "judgments.jsonl")
+        assertion_failures = _load_assertion_failures(
+            active_run_dir / "assertion_results.jsonl"
+        )
+        records = _candidate_records_for_clustering(
+            trace_records,
+            baseline_calls,
+            candidate_calls,
+            judgments,
+            assertion_failures,
+        )
+        regressions = build_regression_set(records)
+        buckets = cluster_regressions(
+            regressions,
+            n_sampled_pairs=len(trace_records),
+            min_cluster_size=manifest_model.clustering.min_cluster_size,
+        )
+        named, stats = name_clusters(
+            buckets,
+            namer=FakeNamer(),
+            store=ReplayStore(active_run_dir / "replay.sqlite"),
+            run_id=run_id,
+        )
+        clusters_hash = write_clusters_json(
+            active_run_dir / "clusters.json",
+            named,
+            stats=stats,
+        )
+        patch_hash = None
+        if propose_patches:
+            detection = detect_templates(trace_records)
+            target = select_patch_target(trace_records, detection)
+            reports: list[PatchReport] = []
+            patches_dir = active_run_dir / "patches"
+            for bucket in named:
+                proposal, _patch_stats = propose_patch(
+                    cluster=bucket,
+                    regressions=regressions,
+                    target=target,
+                    patcher=FakePatcher(),
+                    store=ReplayStore(active_run_dir / "replay.sqlite"),
+                    run_id=run_id,
+                )
+                if proposal is None:
+                    continue
+                diff_path = patches_dir / f"patch_{bucket.cluster_id}.diff"
+                diff_path.parent.mkdir(parents=True, exist_ok=True)
+                with diff_path.open("w", encoding="utf-8", newline="\n") as handle:
+                    handle.write(proposal.diff_text)
+                reports.append(
+                    PatchReport(
+                        cluster_id=bucket.cluster_id,
+                        diff_path=str(diff_path),
+                        fixed_fraction=0.0,
+                        control_regressions=0,
+                        accepted=False,
+                        reason="not_validated_cli",
+                    )
+                )
+            patch_hash = write_patch_report(patches_dir / "patch_report.json", reports)
+    except (OSError, ValueError) as exc:
+        _fail(str(exc), json_output)
+
+    payload = {
+        "status": "ok",
+        "run_id": run_id,
+        "run_dir": str(active_run_dir),
+        "regression_count": len(regressions),
+        "cluster_count": len(named),
+        "clusters_sha256": clusters_hash,
+        "patch_report_sha256": patch_hash,
+    }
+    if json_output:
+        console.print_json(data=payload)
+    else:
+        console.print_json(data=payload)
 
 
 @app.command()

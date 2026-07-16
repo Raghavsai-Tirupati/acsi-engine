@@ -142,6 +142,8 @@ Assertion types to implement: `contains`, `not_contains`, `regex`, `json_schema`
 11. **Monitor** (`acsi monitor`): replay the golden suite (top strata + all assertion-bearing prompts, ~100–200) against the pinned production model on demand/cron; same noise-floor test; nonzero exit code + JSON summary on drift (CI-friendly).
 12. **`acsi run`** = import-check → scrub → sample → baseline → replay → diff → judge → cluster → verdict → cert, with per-stage resume.
 
+SPEC-NOTE: `acsi cluster --run <run_id>` is also exposed as a standalone stage command for composability, mirroring the separately resumable `baseline`, `replay`, and `judge` commands while preserving `acsi run` as the full pipeline entrypoint.
+
 ## 6. Critical engineering constraints (each of these has burned someone; do not skip)
 
 1. **Capture is fail-open.** The reference wrappers (Python module + documented TypeScript snippet) must swallow and locally log their own errors, never raise into the host app, and write asynchronously with drop-on-backpressure. A certifier that breaks customer prod on day one is dead.

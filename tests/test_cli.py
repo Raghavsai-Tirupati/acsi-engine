@@ -15,6 +15,7 @@ def test_help_lists_m0_command_surface() -> None:
         "run",
         "baseline",
         "replay",
+        "cluster",
         "judge",
         "cert",
         "review",
