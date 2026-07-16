@@ -25,9 +25,10 @@ class AsyncJsonlWriter:
         except Exception:
             logger.debug("ACSI capture dropped an event due to local backpressure.", exc_info=True)
 
-    def close(self) -> None:
+    def close(self, timeout: float = 5.0) -> None:
         try:
             self._queue.put_nowait(None)
+            self._thread.join(timeout=timeout)
         except Exception:
             logger.debug("ACSI capture close signal could not be queued.", exc_info=True)
 
@@ -50,4 +51,3 @@ def capture_event(writer: AsyncJsonlWriter, payload: dict[str, Any]) -> None:
         writer.write(payload)
     except Exception:
         logger.debug("ACSI capture failed open.", exc_info=True)
-
