@@ -61,7 +61,9 @@ class ReplayResult:
 
 
 class ReplayAbortError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class ReplayInterrupted(RuntimeError):
@@ -222,7 +224,7 @@ async def replay(
             except PermanentError as exc:
                 if exc.run_level:
                     halt_event.set()
-                    raise ReplayAbortError(str(exc)) from exc
+                    raise ReplayAbortError(str(exc), status_code=exc.status_code) from exc
                 store.write_error(
                     run_id=config.run_id,
                     trace_id=trace_id,

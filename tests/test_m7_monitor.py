@@ -8,7 +8,7 @@ import pytest
 
 from acsi.importers.jsonl import import_jsonl_paths
 from acsi.monitor import init_monitor, run_monitor
-from acsi.replay.clients import FakeClient, RegressionRule
+from acsi.replay.clients import CompletionRequest, FakeClient, PermanentError, RegressionRule
 from acsi.replay.runner import ReplayInterrupted, build_completion_request
 from acsi.schemas import WorkloadManifest
 
@@ -29,6 +29,30 @@ def test_monitor_init_writes_deterministic_golden_suite(tmp_path: Path) -> None:
     assert manifest_payload["pinned_model"] == {"provider": "anthropic", "model": "claude-old"}
     assert manifest_payload["stored_noise_floor_ci"]["upper"] == 0.0
     assert manifest_payload["tau"] == 0.9
+
+
+def test_monitor_init_includes_all_assertion_bearing_prompts(tmp_path: Path) -> None:
+    manifest, run_root, active_run_dir = _write_certified_run(
+        tmp_path,
+        assertions=[{"id": "json-valid", "severity": "critical", "type": "json_valid"}],
+        assertion_trace_indexes=[0, 2, 4],
+    )
+
+    result = init_monitor(manifest=manifest, run_id=RUN_ID, run_dir=run_root)
+
+    assertion_bearing = {
+        json.loads(line)["pair_id"]
+        for line in (active_run_dir / "assertion_results.jsonl").read_text(
+            encoding="utf-8"
+        ).splitlines()
+    }
+    included = {
+        json.loads(line)["trace_id"]
+        for line in result.golden_path.read_text(encoding="utf-8").splitlines()
+    }
+    assert len(assertion_bearing) == 3
+    assert len(assertion_bearing & included) == 3
+    assert assertion_bearing <= included
 
 
 def test_monitor_run_clean_returns_no_drift_summary(tmp_path: Path) -> None:
@@ -123,7 +147,7 @@ def test_monitor_drift_on_served_model_mismatch(tmp_path: Path) -> None:
     assert result.summary["pinned_model"] == "claude-old"
 
 
-def test_monitor_operational_failure_is_distinct_exit_one(tmp_path: Path) -> None:
+def test_monitor_retired_pinned_model_is_drift_exit_two(tmp_path: Path) -> None:
     manifest, run_root, _active_run_dir = _write_certified_run(tmp_path, assertions=[])
     init_monitor(manifest=manifest, run_id=RUN_ID, run_dir=run_root)
     client = FakeClient(seed=42, retired_models={"claude-old"})
@@ -132,14 +156,31 @@ def test_monitor_operational_failure_is_distinct_exit_one(tmp_path: Path) -> Non
         manifest=manifest,
         run_dir=run_root,
         client=client,
-        run_id="monitor-operational-failure",
+        run_id="monitor-retired-pinned-model",
+    )
+
+    assert result.exit_code == 2
+    assert result.operational_message is None
+    assert result.summary["reasons"] == ["model_retired"]
+    assert result.summary["message"] == (
+        "Pinned model claude-old returned 404; it may be retired or renamed."
+    )
+    assert result.summary_path is not None and result.summary_path.exists()
+
+
+def test_monitor_unauthorized_run_level_failure_stays_operational(tmp_path: Path) -> None:
+    manifest, run_root, _active_run_dir = _write_certified_run(tmp_path, assertions=[])
+    init_monitor(manifest=manifest, run_id=RUN_ID, run_dir=run_root)
+
+    result = run_monitor(
+        manifest=manifest,
+        run_dir=run_root,
+        client=UnauthorizedClient(),
+        run_id="monitor-unauthorized",
     )
 
     assert result.exit_code == 1
-    assert result.operational_message == (
-        "monitor operational failure: Model claude-old returned 404; it may be retired. "
-        "M3 will add --degraded to certify against stored outputs."
-    )
+    assert result.operational_message == "monitor operational failure: Unauthorized monitor replay."
     assert result.summary_path is None
 
 
@@ -166,6 +207,7 @@ def _write_certified_run(
     tmp_path: Path,
     *,
     assertions: list[dict[str, Any]],
+    assertion_trace_indexes: list[int] | None = None,
 ) -> tuple[WorkloadManifest, Path, Path]:
     manifest_payload = {
         "assertions": assertions,
@@ -196,6 +238,7 @@ def _write_certified_run(
         active_run_dir / "baseline" / "responses.jsonl",
         [_baseline_response(trace, manifest.baseline) for trace in traces],
     )
+    assertion_indexes = assertion_trace_indexes or ([0] if assertions else [])
     _write_jsonl(
         active_run_dir / "assertion_results.jsonl",
         [
@@ -203,10 +246,11 @@ def _write_certified_run(
                 "assertion_id": assertion["id"],
                 "baseline_passed": True,
                 "candidate_passed": True,
-                "pair_id": str(traces[0].trace_id),
+                "pair_id": str(traces[index].trace_id),
                 "severity": assertion["severity"],
             }
             for assertion in assertions
+            for index in assertion_indexes
         ],
     )
     _write_json(
@@ -227,6 +271,15 @@ def _write_certified_run(
         },
     )
     return manifest, run_root, active_run_dir
+
+
+class UnauthorizedClient:
+    def complete(self, _request: CompletionRequest):
+        raise PermanentError(
+            "Unauthorized monitor replay.",
+            run_level=True,
+            status_code=401,
+        )
 
 
 def _baseline_response(trace, model) -> dict[str, Any]:

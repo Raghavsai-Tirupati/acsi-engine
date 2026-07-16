@@ -154,6 +154,19 @@ def run_monitor(
     except ReplayInterrupted:
         raise
     except ReplayAbortError as exc:
+        # SPEC-NOTE: M7 closeout reclassifies a 404 on the monitor's pinned
+        # model as drift: the monitored target changed, so migration owners
+        # should receive the signal instead of monitor operators.
+        if exc.status_code == 404:
+            summary = _retired_model_summary(golden_manifest)
+            summary_path = active_run_dir / "summary.json"
+            summary_hash = _write_json(summary_path, summary)
+            return MonitorRunResult(
+                exit_code=2,
+                summary=summary,
+                summary_path=summary_path,
+                summary_sha256=summary_hash,
+            )
         return MonitorRunResult(
             exit_code=1,
             summary={},
@@ -190,6 +203,22 @@ def run_monitor(
         cache_hits=result.cache_hits,
         dispatched=result.dispatched,
     )
+
+
+def _retired_model_summary(golden_manifest: dict[str, Any]) -> dict[str, Any]:
+    pinned_model = ProviderModel.model_validate(golden_manifest["pinned_model"])
+    message = f"Pinned model {pinned_model.model} returned 404; it may be retired or renamed."
+    stored_ci = golden_manifest.get("stored_noise_floor_ci") or {}
+    return {
+        "assertion_regressions": [],
+        "beyond_noise_rate": 0.0,
+        "drift": True,
+        "message": message,
+        "pinned_model": pinned_model.model,
+        "reasons": ["model_retired"],
+        "served_model": "",
+        "stored_bound": round(float(stored_ci.get("upper", 0.0)), 12),
+    }
 
 
 def _monitor_summary(
