@@ -4,13 +4,133 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>ACSI Certificate Report</title>
+    <style>
+      body { color: #111827; font-family: ui-sans-serif, system-ui, sans-serif; margin: 0; }
+      main { margin: 0 auto; max-width: 1080px; padding: 32px 20px; }
+      h1, h2, h3 { line-height: 1.2; margin: 0 0 12px; }
+      h2 { border-top: 1px solid #d1d5db; margin-top: 28px; padding-top: 24px; }
+      table { border-collapse: collapse; width: 100%; }
+      th, td { border-bottom: 1px solid #e5e7eb; padding: 8px; text-align: left; vertical-align: top; }
+      th { background: #f9fafb; font-weight: 700; }
+      pre { background: #f3f4f6; overflow: auto; padding: 12px; white-space: pre-wrap; }
+      .banner { border: 2px solid #111827; padding: 18px; }
+      .verdict { font-size: 2rem; font-weight: 800; }
+      .muted { color: #4b5563; }
+      .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+      .panel { border: 1px solid #d1d5db; padding: 12px; }
+      .small { font-size: 0.9rem; }
+    </style>
+    <script>{{ alpine_js|safe }}</script>
   </head>
   <body>
     <main>
-      <h1>ACSI Certificate Report</h1>
-      <p>{{ verdict }}</p>
+      <section class="banner">
+        <div class="verdict">{{ payload.verdict }}</div>
+        <p>{{ payload.coverage_sentence }}</p>
+        {% if payload.coverage.zero_event_bound_sentence %}
+        <p>{{ payload.coverage.zero_event_bound_sentence }}</p>
+        {% endif %}
+      </section>
+
+      <h2>Criteria</h2>
+      <table>
+        <thead><tr><th>Criterion</th><th>Input</th><th>Threshold</th><th>Status</th></tr></thead>
+        <tbody>
+          {% for criterion in payload.criteria %}
+          <tr>
+            <td>{{ criterion.id }}</td>
+            <td><pre>{{ criterion|tojson(indent=2) }}</pre></td>
+            <td>{{ criterion.threshold if criterion.threshold is defined else criterion.reason }}</td>
+            <td>{{ criterion.passed }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+
+      <h2>Noise Floor And Candidate</h2>
+      <table>
+        <tbody>
+          <tr><th>Candidate rate</th><td>{{ "%.2f%%"|format(payload.candidate_disagreement.rate * 100) }}</td></tr>
+          <tr><th>Candidate CI</th><td>{{ "%.2f%%"|format(payload.candidate_disagreement.lower * 100) }} to {{ "%.2f%%"|format(payload.candidate_disagreement.upper * 100) }}</td></tr>
+          <tr><th>Noise floor</th><td>{% if payload.noise_floor %}{{ "%.2f%%"|format(payload.noise_floor.rate * 100) }}{% else %}Unavailable{% endif %}</td></tr>
+          <tr><th>Mode</th><td>{{ payload.mode }}</td></tr>
+        </tbody>
+      </table>
+
+      <h2>Assertions</h2>
+      <div class="grid">
+        {% for severity, summary in payload.assertions_by_severity.items() %}
+        <div class="panel">
+          <h3>{{ severity }}</h3>
+          <p>Configured: {{ summary.configured|length }}</p>
+          <p>Failures: {{ summary.failures }}</p>
+        </div>
+        {% endfor %}
+      </div>
+
+      <h2>Judge Panel</h2>
+      <table>
+        <tbody>
+          <tr><th>Models</th><td>{{ payload.judge_panel.models|join(", ") }}</td></tr>
+          <tr><th>Families</th><td>{{ payload.judge_panel.families|join(", ") }}</td></tr>
+          <tr><th>Order swap</th><td>{{ payload.judge_panel.order_swap }}</td></tr>
+          <tr><th>Agreement</th><td>{{ payload.judge_panel.agreement_percent }}</td></tr>
+          <tr><th>Alpha</th><td>{{ payload.judge_panel.krippendorff_alpha }}</td></tr>
+          <tr><th>Calibration</th><td>{{ payload.judge_panel.calibration_accuracy }}</td></tr>
+        </tbody>
+      </table>
+
+      <h2>Clusters And Patches</h2>
+      {% for cluster in payload.clusters %}
+      <section class="panel" x-data="{open:false}">
+        <h3>{{ cluster.name }} <span class="small muted">({{ cluster.count }})</span></h3>
+        <p>{{ cluster.description }}</p>
+        <p class="small">Severity: {{ cluster.severity }}; share: {{ cluster.share_of_sampled }}</p>
+        <button type="button" x-on:click="open=!open">Details</button>
+        <div x-show="open">
+          {% for exemplar in cluster.exemplars %}
+          <pre>{{ exemplar }}</pre>
+          {% endfor %}
+          {% if cluster.patch_diff %}
+          <pre>{{ cluster.patch_diff }}</pre>
+          {% endif %}
+        </div>
+      </section>
+      {% else %}
+      <p>No regression clusters were recorded.</p>
+      {% endfor %}
+
+      <h2>Cost, Latency, And Tokens</h2>
+      <table>
+        <tbody>
+          {% for key, value in payload.cost_latency.items() %}
+          <tr><th>{{ key }}</th><td>{{ value }}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+
+      <h2>Scope And Exclusions</h2>
+      <table>
+        <tbody>
+          <tr><th>Workload</th><td>{{ payload.scope.workload }}</td></tr>
+          <tr><th>Sample size</th><td>{{ payload.coverage.n }}</td></tr>
+          <tr><th>Sampling method</th><td>{{ payload.coverage.sampling_method }}</td></tr>
+          <tr><th>Exclusion percent</th><td>{{ payload.coverage.exclusion_percent }}</td></tr>
+          <tr><th>Scrubbed</th><td>{{ payload.scope.scrubbed }}</td></tr>
+        </tbody>
+      </table>
+
+      <h2>Signature</h2>
+      <p class="small">Verify offline with <code>acsi verify cert.json</code>.</p>
+      <table>
+        <tbody>
+          <tr><th>Algorithm</th><td>{{ cert.header.algo }}</td></tr>
+          <tr><th>Public key</th><td>{{ cert.header.public_key }}</td></tr>
+          <tr><th>Signature</th><td>{{ cert.signature }}</td></tr>
+        </tbody>
+      </table>
+
       <script type="application/json" id="acsi-certificate">{{ certificate_json }}</script>
     </main>
   </body>
 </html>
-

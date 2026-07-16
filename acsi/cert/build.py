@@ -1,6 +1,594 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import json
+import os
+import re
+from contextlib import suppress
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
 
-def build_certificate() -> None:
-    raise NotImplementedError("Certificate build is scheduled for M6.")
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+    Ed25519PrivateKey,
+    Ed25519PublicKey,
+)
+from cryptography.hazmat.primitives.serialization import (
+    Encoding,
+    NoEncryption,
+    PrivateFormat,
+    PublicFormat,
+)
 
+from acsi import __version__
+from acsi.judge.ensemble import aggregate_pair_outcomes
+from acsi.judge.rubric import CandidateOutcome
+from acsi.replay.artifacts import sha256_file
+from acsi.schemas import TraceRecord, WorkloadManifest
+from acsi.stats import percentile_bootstrap_ci, rule_of_three_upper_bound
+
+BANNED_PHRASES = ("guarantee", "guaranteed", "identical", "zero risk", "proven equivalent")
+BANNED_RE = re.compile(
+    r"\b(?:guarantee|guaranteed|identical|zero\ risk|proven\ equivalent)\b",
+    re.IGNORECASE,
+)
+REGRESSION_OUTCOMES = {"worse_minor", "worse_critical", "unresolved"}
+SCHEMA_VERSION = "1.0"
+
+
+class BannedLanguageError(ValueError):
+    pass
+
+
+class CertificateVerificationError(ValueError):
+    pass
+
+
+@dataclass(frozen=True)
+class BuildCertificateResult:
+    cert: dict[str, Any]
+    cert_sha256: str
+    payload: dict[str, Any]
+    key_generated: bool = False
+
+
+def build_certificate(
+    *,
+    manifest: WorkloadManifest,
+    traces: list[TraceRecord],
+    run_dir: Path,
+    manifest_path: Path,
+    cert_path: Path | None = None,
+    degraded: bool = False,
+    authored_context: list[str] | None = None,
+) -> BuildCertificateResult:
+    assert_authored_strings_clean(*(authored_context or []))
+    if not traces:
+        raise ValueError("Cannot build a certificate for zero sampled traces.")
+
+    active_cert_path = cert_path or run_dir / "cert.json"
+    run_payload = _read_json(run_dir / "run.json", default={})
+    run_started_at = str(run_payload.get("run_started_at") or _stable_now())
+    run_id = str(run_payload.get("run_id") or run_dir.name)
+    sampling_report = _read_json(run_dir / "sampling_report.json", default={})
+    scrub_report = _read_json(run_dir / "scrub_report.json", default={})
+    noise_floor = _read_json(run_dir / "baseline" / "noise_floor.json", default={})
+    assertion_rows = _read_jsonl(run_dir / "assertion_results.jsonl")
+    judgment_rows = _read_jsonl(run_dir / "judgments.jsonl")
+    judge_stats = _read_json(run_dir / "judge_stats.json", default={})
+    clusters_payload = _read_json(run_dir / "clusters.json", default={"clusters": []})
+    patches_payload = _read_json(
+        run_dir / "patches" / "patch_report.json",
+        default={"patches": []},
+    )
+    baseline_calls = _read_jsonl(_first_existing([run_dir / "baseline" / "responses.jsonl"]))
+    candidate_calls = _read_jsonl(_first_existing([run_dir / "candidate" / "responses.jsonl"]))
+
+    n = len(traces)
+    candidate_ci = _candidate_regression_ci(judgment_rows, traces, manifest.sampling.seed)
+    noise_ci = _noise_floor_ci(noise_floor)
+    degraded_mode = degraded or bool(noise_floor.get("degraded")) or noise_ci is None
+    critical_failures = _critical_failure_count(assertion_rows)
+    criterion_a = {
+        "actual": critical_failures,
+        "id": "critical_assertions",
+        "passed": critical_failures <= manifest.thresholds.max_critical,
+        "threshold": manifest.thresholds.max_critical,
+    }
+    if degraded_mode:
+        criterion_b = {
+            "id": "candidate_regression_rate",
+            "mode": "degraded",
+            "passed": None,
+            "reason": "noise_floor_unavailable",
+        }
+    else:
+        assert noise_ci is not None
+        threshold = noise_ci["upper"] + manifest.thresholds.epsilon_pp / 100
+        criterion_b = {
+            "actual_ci_upper": candidate_ci["upper"],
+            "baseline_ci_upper": noise_ci["upper"],
+            "epsilon": manifest.thresholds.epsilon_pp / 100,
+            "id": "candidate_regression_rate",
+            "passed": candidate_ci["upper"] <= threshold,
+            "threshold": threshold,
+        }
+    critical_clusters = [
+        cluster
+        for cluster in clusters_payload.get("clusters", [])
+        if cluster.get("severity") == "worse_critical"
+        and float(cluster.get("share_of_sampled", 0.0)) > 0.01
+    ]
+    criterion_c = {
+        "actual": [
+            {
+                "cluster_id": cluster.get("cluster_id"),
+                "share_of_sampled": cluster.get("share_of_sampled"),
+            }
+            for cluster in critical_clusters
+        ],
+        "id": "critical_cluster_share",
+        "passed": not critical_clusters,
+        "threshold": 0.01,
+    }
+    verdict = _verdict([criterion_a, criterion_b, criterion_c], degraded_mode=degraded_mode)
+
+    sanitizer = Sanitizer()
+    clusters = _certificate_clusters(
+        clusters_payload,
+        patches_payload,
+        traces,
+        sanitizer=sanitizer,
+    )
+    coverage_sentence = _coverage_sentence(
+        verdict=verdict,
+        n=n,
+        pct=_coverage_percent(sampling_report, traces),
+        ci=candidate_ci,
+        degraded=degraded_mode,
+    )
+    zero_event_sentence = _zero_event_sentence(n) if critical_failures == 0 else None
+    payload: dict[str, Any] = {
+        "accepted_patches": [
+            cluster["patch_diff"]
+            for cluster in clusters
+            if cluster.get("patch_diff")
+        ],
+        "assertions_by_severity": _assertions_by_severity(assertion_rows, manifest),
+        "banned_language_sanitization_count": sanitizer.count,
+        "candidate_disagreement": candidate_ci,
+        "candidate_regression_rate": candidate_ci["rate"],
+        "clusters": clusters,
+        "config_hash": sha256_file(manifest_path),
+        "cost_latency": _cost_latency_payload(baseline_calls, candidate_calls),
+        "coverage": {
+            "exclusion_percent": _exclusion_percent(sampling_report),
+            "n": n,
+            "production_template_coverage_pct": _coverage_percent(sampling_report, traces),
+            "sampling_method": str(sampling_report.get("sampling_mode") or "unknown"),
+            "strata": sampling_report.get("strata", []),
+            "zero_event_bound_sentence": zero_event_sentence,
+        },
+        "coverage_sentence": coverage_sentence,
+        "criteria": [criterion_a, criterion_b, criterion_c],
+        "delta": _delta_ci(candidate_ci, noise_ci),
+        "engine_version": __version__,
+        "judge_panel": _judge_panel(judge_stats),
+        "manifest": {
+            "baseline": manifest.baseline.model_dump(mode="json"),
+            "candidate": manifest.candidate.model_dump(mode="json"),
+            "workload": manifest.workload,
+        },
+        "mode": "degraded" if degraded_mode else "standard",
+        "noise_floor": noise_ci,
+        "noise_floor_raw": noise_floor,
+        "run_id": run_id,
+        "run_started_at": run_started_at,
+        "scope": {
+            "sampled_trace_hash": run_payload.get("sampled_trace_hash"),
+            "scrubbed": bool(manifest.privacy.scrub),
+            "scrub_report": scrub_report,
+            "workload": manifest.workload,
+        },
+        "verdict": verdict,
+    }
+    payload = sanitizer.sanitize_payload(payload)
+    assert_no_banned_language(json.dumps(payload, sort_keys=True, ensure_ascii=False))
+
+    private_key, public_key, generated = _load_or_create_signing_key(run_dir)
+    signature = _sign_payload(private_key, payload)
+    cert = {
+        "header": {
+            "algo": "ed25519",
+            "engine_version": __version__,
+            "issued_at": _stable_now(),
+            "public_key": _public_key_b64(public_key),
+            "schema_version": SCHEMA_VERSION,
+        },
+        "payload": payload,
+        "signature": signature,
+    }
+    assert_no_banned_language(json.dumps(cert, sort_keys=True, ensure_ascii=False))
+    digest = _write_json(active_cert_path, cert)
+    return BuildCertificateResult(
+        cert=cert,
+        cert_sha256=digest,
+        payload=payload,
+        key_generated=generated,
+    )
+
+
+class Sanitizer:
+    def __init__(self) -> None:
+        self.count = 0
+
+    def sanitize_payload(self, value: Any) -> Any:
+        if isinstance(value, str):
+            return self.sanitize_text(value)
+        if isinstance(value, list):
+            return [self.sanitize_payload(item) for item in value]
+        if isinstance(value, dict):
+            return {key: self.sanitize_payload(item) for key, item in value.items()}
+        return value
+
+    def sanitize_text(self, value: str) -> str:
+        matches = BANNED_RE.findall(value)
+        self.count += len(matches)
+        return BANNED_RE.sub("[term removed]", value)
+
+
+def assert_authored_strings_clean(*values: str) -> None:
+    for value in values:
+        assert_no_banned_language(value)
+
+
+def assert_no_banned_language(value: str) -> None:
+    match = BANNED_RE.search(value)
+    if match:
+        raise BannedLanguageError(f"Certificate contains banned wording: {match.group(0)}")
+
+
+def verify_certificate(cert_path: Path) -> dict[str, Any]:
+    cert = json.loads(cert_path.read_text(encoding="utf-8"))
+    try:
+        public_key = Ed25519PublicKey.from_public_bytes(
+            base64.b64decode(cert["header"]["public_key"])
+        )
+        signature = base64.b64decode(cert["signature"])
+        public_key.verify(signature, canonical_payload_bytes(cert["payload"]))
+    except (KeyError, InvalidSignature, ValueError) as exc:
+        raise CertificateVerificationError("Certificate signature verification failed.") from exc
+    return cert
+
+
+def canonical_payload_bytes(payload: dict[str, Any]) -> bytes:
+    return json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+
+
+def _sign_payload(private_key: Ed25519PrivateKey, payload: dict[str, Any]) -> str:
+    return base64.b64encode(private_key.sign(canonical_payload_bytes(payload))).decode("ascii")
+
+
+def _load_or_create_signing_key(run_dir: Path) -> tuple[Ed25519PrivateKey, Ed25519PublicKey, bool]:
+    env_value = os.environ.get("ACSI_SIGNING_KEY")
+    if env_value:
+        private_key = Ed25519PrivateKey.from_private_bytes(base64.b64decode(env_value))
+        return private_key, private_key.public_key(), False
+
+    key_path = run_dir.parents[1] / "keys" / "ed25519.key"
+    key_path.parent.mkdir(parents=True, exist_ok=True)
+    if key_path.exists():
+        raw = base64.b64decode(key_path.read_text(encoding="utf-8").strip())
+        private_key = Ed25519PrivateKey.from_private_bytes(raw)
+        return private_key, private_key.public_key(), False
+
+    private_key = Ed25519PrivateKey.generate()
+    raw = private_key.private_bytes(
+        encoding=Encoding.Raw,
+        format=PrivateFormat.Raw,
+        encryption_algorithm=NoEncryption(),
+    )
+    with key_path.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(f"{base64.b64encode(raw).decode('ascii')}\n")
+    with suppress(OSError):
+        key_path.chmod(0o600)
+    return private_key, private_key.public_key(), True
+
+
+def _public_key_b64(public_key: Ed25519PublicKey) -> str:
+    raw = public_key.public_bytes(encoding=Encoding.Raw, format=PublicFormat.Raw)
+    return base64.b64encode(raw).decode("ascii")
+
+
+def _candidate_regression_ci(
+    judgment_rows: list[dict[str, Any]],
+    traces: list[TraceRecord],
+    seed: int,
+) -> dict[str, float]:
+    votes: dict[str, dict[str, CandidateOutcome | None]] = {}
+    for row in judgment_rows:
+        outcome = row.get("outcome")
+        parsed_outcome = None if outcome is None else str(outcome)
+        votes.setdefault(str(row["pair_id"]), {})[str(row["judge"])] = parsed_outcome  # type: ignore[assignment]
+    outcomes = aggregate_pair_outcomes(votes)
+    indicators = [
+        float(outcomes.get(str(trace.trace_id), "equivalent") in REGRESSION_OUTCOMES)
+        for trace in traces
+    ]
+    ci = percentile_bootstrap_ci(indicators or [0.0], seed=seed)
+    return _ci_payload(ci.mean, ci.lower, ci.upper, ci.confidence)
+
+
+def _noise_floor_ci(noise_floor: dict[str, Any]) -> dict[str, float] | None:
+    if noise_floor.get("degraded") or noise_floor.get("noise_floor") == "unavailable":
+        return None
+    raw = noise_floor.get("beyond_noise_ci")
+    if not isinstance(raw, dict):
+        return None
+    return {
+        "confidence": float(raw.get("confidence", 0.95)),
+        "lower": float(raw.get("lower", 0.0)),
+        "rate": float(raw.get("rate", raw.get("mean", 0.0))),
+        "upper": float(raw.get("upper", 0.0)),
+    }
+
+
+def _ci_payload(rate: float, lower: float, upper: float, confidence: float) -> dict[str, float]:
+    return {
+        "confidence": round(float(confidence), 12),
+        "lower": round(float(lower), 12),
+        "rate": round(float(rate), 12),
+        "upper": round(float(upper), 12),
+    }
+
+
+def _delta_ci(candidate_ci: dict[str, float], noise_ci: dict[str, float] | None) -> dict[str, Any]:
+    if noise_ci is None:
+        return {"mode": "degraded", "rate": None}
+    return {
+        "confidence": candidate_ci["confidence"],
+        "lower": round(candidate_ci["lower"] - noise_ci["upper"], 12),
+        "rate": round(candidate_ci["rate"] - noise_ci["rate"], 12),
+        "upper": round(candidate_ci["upper"] - noise_ci["lower"], 12),
+    }
+
+
+def _verdict(criteria: list[dict[str, Any]], *, degraded_mode: bool) -> str:
+    for criterion in criteria:
+        if criterion.get("passed") is False:
+            return "BLOCK"
+        if criterion.get("passed") is None and not degraded_mode:
+            return "BLOCK"
+    return "PASS"
+
+
+def _critical_failure_count(assertion_rows: list[dict[str, Any]]) -> int:
+    return sum(
+        1
+        for row in assertion_rows
+        if row.get("severity") == "critical" and row.get("candidate_passed") is False
+    )
+
+
+def _assertions_by_severity(
+    assertion_rows: list[dict[str, Any]],
+    manifest: WorkloadManifest,
+) -> dict[str, Any]:
+    configured = {
+        severity: [
+            assertion.id for assertion in manifest.assertions if assertion.severity == severity
+        ]
+        for severity in ("critical", "major", "minor")
+    }
+    failures: dict[str, int] = {"critical": 0, "major": 0, "minor": 0}
+    for row in assertion_rows:
+        severity = str(row.get("severity"))
+        if severity in failures and row.get("candidate_passed") is False:
+            failures[severity] += 1
+    return {
+        severity: {
+            "configured": configured[severity],
+            "failures": failures[severity],
+        }
+        for severity in ("critical", "major", "minor")
+    }
+
+
+def _certificate_clusters(
+    clusters_payload: dict[str, Any],
+    patches_payload: dict[str, Any],
+    traces: list[TraceRecord],
+    *,
+    sanitizer: Sanitizer,
+) -> list[dict[str, Any]]:
+    traces_by_id = {str(trace.trace_id): trace for trace in traces}
+    accepted_patches = _accepted_patches(patches_payload)
+    clusters: list[dict[str, Any]] = []
+    for cluster in sorted(
+        clusters_payload.get("clusters", []),
+        key=lambda item: str(item.get("cluster_id", "")),
+    ):
+        pair_ids = [str(pair_id) for pair_id in cluster.get("pair_ids", [])]
+        exemplars = [
+            _truncate_exemplar(traces_by_id[pair_id].request.messages[0].content)
+            for pair_id in pair_ids
+            if pair_id in traces_by_id
+        ][:3]
+        cluster_id = str(cluster.get("cluster_id"))
+        patch_diff = accepted_patches.get(cluster_id)
+        clusters.append(
+            {
+                "cluster_id": cluster_id,
+                "count": int(cluster.get("member_count", len(pair_ids))),
+                "description": sanitizer.sanitize_text(str(cluster.get("description", ""))),
+                "exemplars": [sanitizer.sanitize_text(exemplar) for exemplar in exemplars],
+                "name": sanitizer.sanitize_text(str(cluster.get("name", ""))),
+                "patch_diff": sanitizer.sanitize_text(patch_diff) if patch_diff else None,
+                "severity": cluster.get("severity"),
+                "share_of_sampled": cluster.get("share_of_sampled"),
+            }
+        )
+    return clusters
+
+
+def _accepted_patches(patches_payload: dict[str, Any]) -> dict[str, str]:
+    accepted: dict[str, str] = {}
+    for patch in patches_payload.get("patches", []):
+        if not patch.get("accepted"):
+            continue
+        diff_path = Path(str(patch["diff_path"]))
+        if diff_path.exists():
+            accepted[str(patch["cluster_id"])] = diff_path.read_text(encoding="utf-8")[:4000]
+    return accepted
+
+
+def _coverage_sentence(
+    *,
+    verdict: str,
+    n: int,
+    pct: float,
+    ci: dict[str, float],
+    degraded: bool,
+) -> str:
+    base = (
+        f"{verdict} at n={n}, covering {pct:.1f}% of production template distribution, "
+        f"95% CI [{ci['lower']:.1%}, {ci['upper']:.1%}]. "
+        "This certifies the sampled workload against the stated assertions; "
+        "it does not certify unsampled inputs."
+    )
+    if degraded:
+        return (
+            f"{base} Noise floor unavailable (degraded mode): "
+            "behavioral-variance comparison was not performed."
+        )
+    return base
+
+
+def _coverage_percent(sampling_report: dict[str, Any], traces: list[TraceRecord]) -> float:
+    if "production_template_coverage_pct" in sampling_report:
+        return float(sampling_report["production_template_coverage_pct"])
+    sampled_template_ids = {trace.meta.template_id for trace in traces if trace.meta.template_id}
+    if not sampled_template_ids:
+        return 100.0
+    return 100.0
+
+
+def _exclusion_percent(sampling_report: dict[str, Any]) -> float:
+    value = sampling_report.get("exclusion_percent", 0.0)
+    return round(float(value), 12)
+
+
+def _zero_event_sentence(n: int) -> str:
+    return (
+        f"0 critical failures observed at n={n}; 95% upper bound on the true critical rate "
+        f"\u2264 {rule_of_three_upper_bound(n) * 100:.1f}%."
+    )
+
+
+def _judge_panel(judge_stats: dict[str, Any]) -> dict[str, Any]:
+    judges = sorted((judge_stats.get("judges") or {}).keys())
+    ensemble = judge_stats.get("ensemble") or {}
+    calibration = judge_stats.get("calibration") or {}
+    return {
+        "agreement_percent": ensemble.get("raw_agreement_percent"),
+        "calibration_accuracy": calibration.get("accuracy"),
+        "families": sorted({str(judge).split("/", 1)[0] for judge in judges}),
+        "krippendorff_alpha": ensemble.get("krippendorff_alpha"),
+        "models": judges,
+        "order_swap": True,
+    }
+
+
+def _cost_latency_payload(
+    baseline_calls: list[dict[str, Any]],
+    candidate_calls: list[dict[str, Any]],
+) -> dict[str, Any]:
+    baseline_tokens = _mean_output_tokens(baseline_calls)
+    candidate_tokens = _mean_output_tokens(candidate_calls)
+    return {
+        "baseline_mean_latency_ms": _mean_latency(baseline_calls),
+        "baseline_mean_output_tokens": baseline_tokens,
+        "candidate_mean_latency_ms": _mean_latency(candidate_calls),
+        "candidate_mean_output_tokens": candidate_tokens,
+        "latency_delta_ms": _mean_latency(candidate_calls) - _mean_latency(baseline_calls),
+        "tokenizer_inflation": candidate_tokens / baseline_tokens if baseline_tokens else None,
+        "usd_delta": round(_total_cost(candidate_calls) - _total_cost(baseline_calls), 12),
+    }
+
+
+def _mean_output_tokens(calls: list[dict[str, Any]]) -> float:
+    values = [
+        float((call.get("usage") or {}).get("output_tokens", 0))
+        for call in calls
+    ]
+    return round(sum(values) / len(values), 12) if values else 0.0
+
+
+def _mean_latency(calls: list[dict[str, Any]]) -> float:
+    values = [
+        float((call.get("response") or {}).get("latency_ms", 0))
+        for call in calls
+    ]
+    return round(sum(values) / len(values), 12) if values else 0.0
+
+
+def _total_cost(calls: list[dict[str, Any]]) -> float:
+    return round(sum(float(call.get("cost_usd", 0.0)) for call in calls), 12)
+
+
+def _truncate_exemplar(value: str) -> str:
+    return value if len(value) <= 300 else f"{value[:297]}..."
+
+
+def _first_existing(paths: list[Path]) -> Path:
+    for path in paths:
+        if path.exists():
+            return path
+    raise FileNotFoundError(f"Missing artifact: {paths[0]}")
+
+
+def _read_json(path: Path, *, default: dict[str, Any] | None = None) -> dict[str, Any]:
+    if not path.exists():
+        if default is not None:
+            return default
+        raise FileNotFoundError(f"Missing artifact: {path}")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        for line in handle:
+            if line.strip():
+                rows.append(json.loads(line))
+    return rows
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> str:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    content = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    with path.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(f"{content}\n")
+    digest = hashlib.sha256(f"{content}\n".encode()).hexdigest()
+    with Path(f"{path}.sha256").open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(f"{digest}\n")
+    return digest
+
+
+def _stable_now() -> str:
+    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
