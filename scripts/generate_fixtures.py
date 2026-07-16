@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import random
+from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import NAMESPACE_URL, uuid5
@@ -101,11 +102,65 @@ def generate_records(count: int = 300, seed: int = 42) -> list[dict[str, object]
     return records
 
 
+def generate_invalid_lines(main_records: list[dict[str, object]], seed: int = 42) -> list[str]:
+    lines: list[str] = []
+
+    for index in range(5):
+        record = _clone_with_trace_id(
+            main_records[index],
+            f"acsi-invalid-multi-turn-{seed}-{index}",
+        )
+        request = record["request"]
+        assert isinstance(request, dict)
+        messages = request["messages"]
+        assert isinstance(messages, list)
+        messages.append({"role": "assistant", "content": "extra turn"})
+        lines.append(json.dumps(record, sort_keys=True))
+
+    lines.extend(["{not valid json", "[malformed"])
+
+    for index in range(3):
+        lines.append(json.dumps(deepcopy(main_records[index]), sort_keys=True))
+
+    for index in range(2):
+        record = _clone_with_trace_id(
+            main_records[index + 10],
+            f"acsi-invalid-empty-response-{seed}-{index}",
+        )
+        record["response"] = {}
+        lines.append(json.dumps(record, sort_keys=True))
+
+    for index in range(3):
+        record = _clone_with_trace_id(
+            main_records[index + 20],
+            f"acsi-valid-backfill-{seed}-{index}",
+        )
+        record["source"] = "backfill"
+        record["response"] = {}
+        meta = record["meta"]
+        assert isinstance(meta, dict)
+        meta["template_id"] = None
+        lines.append(json.dumps(record, sort_keys=True))
+
+    return lines
+
+
 def write_jsonl(path: Path, records: list[dict[str, object]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
         for record in records:
             handle.write(json.dumps(record, sort_keys=True) + "\n")
+
+
+def write_lines(path: Path, lines: list[str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _clone_with_trace_id(record: dict[str, object], trace_key: str) -> dict[str, object]:
+    cloned = deepcopy(record)
+    cloned["trace_id"] = str(uuid5(NAMESPACE_URL, trace_key))
+    return cloned
 
 
 def main() -> None:
@@ -115,10 +170,17 @@ def main() -> None:
         type=Path,
         default=Path("tests/fixtures/synthetic_traces.jsonl"),
     )
+    parser.add_argument(
+        "--invalid-output",
+        type=Path,
+        default=Path("tests/fixtures/invalid.jsonl"),
+    )
     parser.add_argument("--count", type=int, default=300)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
-    write_jsonl(args.output, generate_records(count=args.count, seed=args.seed))
+    records = generate_records(count=args.count, seed=args.seed)
+    write_jsonl(args.output, records)
+    write_lines(args.invalid_output, generate_invalid_lines(records, seed=args.seed))
 
 
 if __name__ == "__main__":
