@@ -24,8 +24,12 @@ from cryptography.hazmat.primitives.serialization import (
 )
 
 from acsi import __version__
-from acsi.judge.ensemble import aggregate_pair_outcomes
-from acsi.judge.rubric import CandidateOutcome
+from acsi.overrides import (
+    aggregate_judgment_rows,
+    apply_overrides_to_judgments,
+    human_overrides_payload,
+    read_overrides,
+)
 from acsi.replay.artifacts import sha256_file
 from acsi.schemas import TraceRecord, WorkloadManifest
 from acsi.stats import percentile_bootstrap_ci, rule_of_three_upper_bound
@@ -78,6 +82,8 @@ def build_certificate(
     noise_floor = _read_json(run_dir / "baseline" / "noise_floor.json", default={})
     assertion_rows = _read_jsonl(run_dir / "assertion_results.jsonl")
     judgment_rows = _read_jsonl(run_dir / "judgments.jsonl")
+    override_rows = read_overrides(run_dir)
+    effective_judgment_rows = apply_overrides_to_judgments(judgment_rows, override_rows)
     judge_stats = _read_json(run_dir / "judge_stats.json", default={})
     clusters_payload = _read_json(run_dir / "clusters.json", default={"clusters": []})
     patches_payload = _read_json(
@@ -88,8 +94,12 @@ def build_certificate(
     candidate_calls = _read_jsonl(_first_existing([run_dir / "candidate" / "responses.jsonl"]))
 
     n = len(traces)
-    candidate_ci = _candidate_regression_ci(judgment_rows, traces, manifest.sampling.seed)
-    regressed_pairs = _regressed_pairs(assertion_rows, judgment_rows, n=len(traces))
+    candidate_ci = _candidate_regression_ci(
+        effective_judgment_rows,
+        traces,
+        manifest.sampling.seed,
+    )
+    regressed_pairs = _regressed_pairs(assertion_rows, effective_judgment_rows, n=len(traces))
     noise_ci = _noise_floor_ci(noise_floor)
     degraded_mode = degraded or bool(noise_floor.get("degraded")) or noise_ci is None
     critical_failures = _critical_failure_count(assertion_rows)
@@ -117,12 +127,12 @@ def build_certificate(
             "passed": candidate_ci["upper"] <= threshold,
             "threshold": threshold,
         }
-    critical_clusters = [
-        cluster
-        for cluster in clusters_payload.get("clusters", [])
-        if cluster.get("severity") == "worse_critical"
-        and float(cluster.get("share_of_sampled", 0.0)) > 0.01
-    ]
+    critical_clusters = _critical_clusters(
+        clusters_payload,
+        assertion_rows,
+        effective_judgment_rows,
+        n=n,
+    )
     criterion_c = {
         "actual": [
             {
@@ -152,6 +162,21 @@ def build_certificate(
         degraded=degraded_mode,
     )
     zero_event_sentence = _zero_event_sentence(n) if critical_failures == 0 else None
+    human_overrides = human_overrides_payload(override_rows)
+    coverage: dict[str, Any] = {
+        "exclusion_percent": _exclusion_percent(sampling_report),
+        "n": n,
+        "production_template_coverage_pct": _coverage_percent(sampling_report, traces),
+        "sampling_method": str(sampling_report.get("sampling_mode") or "unknown"),
+        "strata": sampling_report.get("strata", []),
+        "zero_event_bound_sentence": zero_event_sentence,
+    }
+    if human_overrides["count"]:
+        count = human_overrides["count"]
+        coverage["human_override_footnote"] = (
+            f"{count} judge outcome(s) were overridden by human review; "
+            "original judge output is preserved in the run record."
+        )
     payload: dict[str, Any] = {
         "accepted_patches": [
             cluster["patch_diff"]
@@ -159,24 +184,17 @@ def build_certificate(
             if cluster.get("patch_diff")
         ],
         "assertions_by_severity": _assertions_by_severity(assertion_rows, manifest),
-        "banned_language_sanitization_count": sanitizer.count,
         "candidate_disagreement": candidate_ci,
         "candidate_regression_rate": candidate_ci["rate"],
         "clusters": clusters,
         "config_hash": sha256_file(manifest_path),
         "cost_latency": _cost_latency_payload(baseline_calls, candidate_calls),
-        "coverage": {
-            "exclusion_percent": _exclusion_percent(sampling_report),
-            "n": n,
-            "production_template_coverage_pct": _coverage_percent(sampling_report, traces),
-            "sampling_method": str(sampling_report.get("sampling_mode") or "unknown"),
-            "strata": sampling_report.get("strata", []),
-            "zero_event_bound_sentence": zero_event_sentence,
-        },
+        "coverage": coverage,
         "coverage_sentence": coverage_sentence,
         "criteria": [criterion_a, criterion_b, criterion_c],
         "delta": _delta_ci(candidate_ci, noise_ci),
         "engine_version": __version__,
+        "human_overrides": human_overrides,
         "judge_panel": _judge_panel(judge_stats),
         "manifest": {
             "baseline": manifest.baseline.model_dump(mode="json"),
@@ -198,6 +216,7 @@ def build_certificate(
         "verdict": verdict,
     }
     payload = sanitizer.sanitize_payload(payload)
+    payload["banned_language_sanitization_count"] = sanitizer.count
     assert_no_banned_language(json.dumps(payload, sort_keys=True, ensure_ascii=False))
 
     private_key, public_key, generated = _load_or_create_signing_key(run_dir)
@@ -315,12 +334,7 @@ def _candidate_regression_ci(
     traces: list[TraceRecord],
     seed: int,
 ) -> dict[str, float]:
-    votes: dict[str, dict[str, CandidateOutcome | None]] = {}
-    for row in judgment_rows:
-        outcome = row.get("outcome")
-        parsed_outcome = None if outcome is None else str(outcome)
-        votes.setdefault(str(row["pair_id"]), {})[str(row["judge"])] = parsed_outcome  # type: ignore[assignment]
-    outcomes = aggregate_pair_outcomes(votes)
+    outcomes = aggregate_judgment_rows(judgment_rows)
     indicators = [
         float(outcomes.get(str(trace.trace_id), "equivalent") in REGRESSION_OUTCOMES)
         for trace in traces
@@ -342,12 +356,7 @@ def _regressed_pairs(
         and row.get("baseline_passed") is True
         and row.get("candidate_passed") is False
     }
-    votes: dict[str, dict[str, CandidateOutcome | None]] = {}
-    for row in judgment_rows:
-        outcome = row.get("outcome")
-        parsed_outcome = None if outcome is None else str(outcome)
-        votes.setdefault(str(row["pair_id"]), {})[str(row["judge"])] = parsed_outcome  # type: ignore[assignment]
-    outcomes = aggregate_pair_outcomes(votes)
+    outcomes = aggregate_judgment_rows(judgment_rows)
     judge_pairs = {
         pair_id
         for pair_id, outcome in outcomes.items()
@@ -366,6 +375,47 @@ def _regressed_pairs(
         "count": count,
         "rate": round(count / n, 12) if n else 0.0,
     }
+
+
+def _critical_clusters(
+    clusters_payload: dict[str, Any],
+    assertion_rows: list[dict[str, Any]],
+    judgment_rows: list[dict[str, Any]],
+    *,
+    n: int,
+) -> list[dict[str, Any]]:
+    assertion_pairs = {
+        str(row.get("pair_id") or row.get("trace_id"))
+        for row in assertion_rows
+        if str(row.get("severity")) == "critical"
+        and row.get("baseline_passed") is True
+        and row.get("candidate_passed") is False
+    }
+    judge_outcomes = aggregate_judgment_rows(judgment_rows)
+    active_critical_pairs = {
+        pair_id
+        for pair_id, outcome in judge_outcomes.items()
+        if outcome == "worse_critical"
+    } | assertion_pairs
+    clusters: list[dict[str, Any]] = []
+    for cluster in clusters_payload.get("clusters", []):
+        if cluster.get("severity") != "worse_critical":
+            continue
+        pair_ids = {str(pair_id) for pair_id in cluster.get("pair_ids", [])}
+        if not pair_ids:
+            if float(cluster.get("share_of_sampled", 0.0)) > 0.01:
+                clusters.append(dict(cluster))
+            continue
+        legacy_cluster_only_pairs = pair_ids - set(judge_outcomes) - assertion_pairs
+        active_pairs = (pair_ids & active_critical_pairs) | legacy_cluster_only_pairs
+        share = len(active_pairs) / n if n else 0.0
+        if share > 0.01:
+            copied = dict(cluster)
+            copied["share_of_sampled"] = round(share, 12)
+            copied["member_count"] = len(active_pairs)
+            copied["pair_ids"] = sorted(active_pairs)
+            clusters.append(copied)
+    return clusters
 
 
 def _noise_floor_ci(noise_floor: dict[str, Any]) -> dict[str, float] | None:
