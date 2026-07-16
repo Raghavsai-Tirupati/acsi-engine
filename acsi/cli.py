@@ -60,6 +60,7 @@ from acsi.judge.runner import (
     select_for_judging,
     write_judge_artifacts,
 )
+from acsi.monitor import init_monitor, run_monitor
 from acsi.patch import (
     FakePatcher,
     PatchReport,
@@ -83,6 +84,7 @@ from acsi.replay.runner import (
     replay as replay_traces,
 )
 from acsi.replay.store import ReplayStore, StoredCall
+from acsi.review import ReviewError, serve_review
 from acsi.sampling import sample_traces, write_sample_artifacts
 from acsi.schemas import ProviderModel, Severity, TraceRecord, export_json_schemas
 from acsi.scrub import scrub_traces, write_scrub_artifacts
@@ -92,7 +94,9 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 schema_app = typer.Typer(help="Export frozen ACSI JSON Schemas.")
+monitor_app = typer.Typer(help="Initialize and run certified drift monitors.")
 app.add_typer(schema_app, name="schema")
+app.add_typer(monitor_app, name="monitor")
 console = Console()
 err_console = Console(stderr=True)
 
@@ -1736,22 +1740,133 @@ def cert(
 
 @app.command()
 def review(
-    report: Annotated[Path, typer.Option("--report", help="Path to report.html.")] = Path(
-        "report.html"
-    ),
-    json_output: JsonOutputOption = False,
-) -> None:
-    _ = report
-    _emit_stub("review", "M7", json_output)
-
-
-@app.command()
-def monitor(
+    run_id: Annotated[
+        str | None,
+        typer.Option("--run", help="Run id under --run-dir/runs to review."),
+    ] = None,
+    port: Annotated[int, typer.Option("--port", help="Loopback review server port.")] = 8765,
     manifest: ManifestOption = Path("acsi.yaml"),
+    run_dir: RunDirOption = Path(".acsi"),
     json_output: JsonOutputOption = False,
 ) -> None:
-    _ = manifest
-    _emit_stub("monitor", "M7", json_output)
+    if run_id is None:
+        _fail("Pass --run with the run id to review.", json_output)
+    try:
+        if json_output:
+            console.print_json(
+                data={
+                    "status": "ok",
+                    "run_id": run_id,
+                    "url": f"http://127.0.0.1:{port}",
+                }
+            )
+        serve_review(run_id=run_id, run_dir=run_dir, manifest_path=manifest, port=port)
+    except (OSError, ReviewError, ValueError) as exc:
+        _fail(str(exc), json_output)
+
+
+@monitor_app.command("init")
+def monitor_init(
+    run_id: Annotated[
+        str | None,
+        typer.Option("--run", help="Certified run id under --run-dir/runs."),
+    ] = None,
+    manifest: ManifestOption = Path("acsi.yaml"),
+    run_dir: RunDirOption = Path(".acsi"),
+    json_output: JsonOutputOption = False,
+) -> None:
+    if run_id is None:
+        _fail("Pass --run with the certified run id.", json_output)
+    try:
+        manifest_model = load_workload_manifest(manifest)
+        result = init_monitor(
+            manifest=manifest_model,
+            run_id=run_id,
+            run_dir=run_dir,
+        )
+    except (OSError, ValueError) as exc:
+        _fail(str(exc), json_output)
+    payload = {
+        "golden_manifest_path": str(result.manifest_path),
+        "golden_path": str(result.golden_path),
+        "status": "ok",
+        "suite_hash": result.suite_hash,
+        "suite_size": result.suite_size,
+        "workload": result.workload,
+    }
+    if json_output:
+        console.print_json(data=payload)
+    else:
+        console.print_json(data=payload)
+
+
+@monitor_app.command("run")
+def monitor_run(
+    manifest: ManifestOption = Path("acsi.yaml"),
+    run_dir: RunDirOption = Path(".acsi"),
+    run_id: Annotated[
+        str | None,
+        typer.Option("--run-id", help="Monitor run id for checkpoint resume."),
+    ] = None,
+    fake_noise: Annotated[
+        float,
+        typer.Option("--fake-noise", help="FakeClient monitor noise rate."),
+    ] = 0.0,
+    served_model: Annotated[
+        str | None,
+        typer.Option("--served-model", help="FakeClient served model override."),
+    ] = None,
+    retired_pinned_model: Annotated[
+        bool,
+        typer.Option("--retire-pinned-model", help="Make FakeClient return a run-level 404."),
+    ] = False,
+    interrupt_after_dispatches: Annotated[
+        int | None,
+        typer.Option("--interrupt-after-dispatches", hidden=True),
+    ] = None,
+    json_output: JsonOutputOption = False,
+) -> None:
+    try:
+        manifest_model = load_workload_manifest(manifest)
+        retired_models = {manifest_model.baseline.model} if retired_pinned_model else set()
+        client = FakeClient(
+            seed=manifest_model.sampling.seed,
+            noise=fake_noise,
+            retired_models=retired_models,
+            served_model_override=served_model,
+        )
+        result = run_monitor(
+            manifest=manifest_model,
+            run_dir=run_dir,
+            client=client,
+            run_id=run_id,
+            interrupt_after_dispatches=interrupt_after_dispatches,
+        )
+    except ReplayInterrupted as exc:
+        _fail(str(exc), json_output)
+    except (OSError, ValueError) as exc:
+        _fail(str(exc), json_output)
+
+    if result.operational_message:
+        if json_output:
+            console.print_json(
+                data={"message": result.operational_message, "status": "error"}
+            )
+        else:
+            console.print(f"Error: {result.operational_message}", style="red")
+        raise typer.Exit(result.exit_code)
+
+    payload = {
+        **result.summary,
+        "status": "ok",
+        "summary_path": str(result.summary_path),
+        "summary_sha256": result.summary_sha256,
+    }
+    if json_output:
+        console.print_json(data=payload)
+    else:
+        console.print_json(data=payload)
+    raise typer.Exit(result.exit_code)
 
 
 @app.command()
