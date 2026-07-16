@@ -317,6 +317,41 @@ def test_override_notes_are_sanitized_on_cert_ingestion(tmp_path: Path) -> None:
     assert "term removed" in cert_text
 
 
+def test_duplicate_overrides_are_append_only_with_last_write_wins(tmp_path: Path) -> None:
+    manifest_path, manifest, traces, _run_root, active_run_dir = _write_run(tmp_path, n=3)
+    pair_id = str(traces[0].trace_id)
+    _write_jsonl(
+        active_run_dir / "judgments.jsonl",
+        [{"judge": "openai/judge-a", "outcome": "worse_minor", "pair_id": pair_id}],
+    )
+    append_override(
+        active_run_dir,
+        pair_id=pair_id,
+        from_outcome="worse_minor",
+        to_outcome="equivalent",
+    )
+    append_override(
+        active_run_dir,
+        pair_id=pair_id,
+        from_outcome="worse_minor",
+        to_outcome="candidate_better",
+    )
+
+    result = build_certificate(
+        manifest=manifest,
+        traces=traces,
+        run_dir=active_run_dir,
+        manifest_path=manifest_path,
+    )
+
+    assert len((active_run_dir / "overrides.jsonl").read_text(encoding="utf-8").splitlines()) == 2
+    assert result.payload["human_overrides"] == {
+        "count": 1,
+        "items": [{"from": "worse_minor", "pair_id": pair_id, "to": "candidate_better"}],
+    }
+    assert result.payload["regressed_pairs"]["count"] == 0
+
+
 def _request(
     port: int,
     method: str,
