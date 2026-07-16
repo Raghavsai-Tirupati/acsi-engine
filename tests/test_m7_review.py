@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
+import acsi.review as review_module
 from acsi.cert.build import build_certificate, verify_certificate
 from acsi.cert.render import render_report
 from acsi.cli import app
@@ -58,6 +59,36 @@ def test_review_server_binds_loopback_and_serves_report(tmp_path: Path) -> None:
     assert "Review Queue" in body
     assert "Unresolved Queue" in body
     assert "Promote Assertion" in body
+
+
+def test_review_server_handles_keyboard_interrupt_cleanly(monkeypatch) -> None:
+    class FakeServer:
+        server_address = ("127.0.0.1", 4321)
+
+        def __init__(self) -> None:
+            self.closed = False
+            self.shutdown_called = False
+
+        def serve_forever(self) -> None:
+            raise KeyboardInterrupt
+
+        def shutdown(self) -> None:
+            self.shutdown_called = True
+
+        def server_close(self) -> None:
+            self.closed = True
+
+    fake = FakeServer()
+
+    def fake_factory(**_kwargs):
+        return fake
+
+    monkeypatch.setattr(review_module, "create_review_server", fake_factory)
+
+    review_module.serve_review(run_id=RUN_ID)
+
+    assert fake.shutdown_called is True
+    assert fake.closed is True
 
 
 def test_review_api_appends_overrides_without_mutating_judgments(tmp_path: Path) -> None:
