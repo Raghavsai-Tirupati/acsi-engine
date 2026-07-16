@@ -145,6 +145,14 @@ class BudgetConfig(StrictModel):
     use_batch_api: bool = False
 
 
+class ClusteringConfig(StrictModel):
+    min_cluster_size: int | None = Field(default=None, ge=2)
+
+
+class PatchConfig(StrictModel):
+    min_fix_rate: float = Field(default=0.8, ge=0, le=1)
+
+
 class WorkloadManifest(StrictModel):
     workload: str
     baseline: ProviderModel
@@ -155,6 +163,8 @@ class WorkloadManifest(StrictModel):
     thresholds: ThresholdConfig
     privacy: PrivacyConfig
     budget: BudgetConfig
+    clustering: ClusteringConfig = Field(default_factory=ClusteringConfig)
+    patch: PatchConfig = Field(default_factory=PatchConfig)
 
 
 class ContentHash(StrictModel):
