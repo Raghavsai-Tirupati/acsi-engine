@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -32,7 +34,7 @@ class ReplayStore:
 
     def initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(self.path) as conn:
+        with _connect(self.path) as conn:
             conn.execute(
                 """
                 create table if not exists calls (
@@ -56,7 +58,7 @@ class ReplayStore:
             )
 
     def get_done(self, run_id: str, trace_id: str, sample_index: int) -> StoredCall | None:
-        with sqlite3.connect(self.path) as conn:
+        with _connect(self.path) as conn:
             row = conn.execute(
                 """
                 select run_id, trace_id, sample_index, model, params_hash, prompt_hash, status,
@@ -90,7 +92,7 @@ class ReplayStore:
                 "served_model": response.served_model,
             }
         )
-        with sqlite3.connect(self.path) as conn:
+        with _connect(self.path) as conn:
             conn.execute(
                 """
                 insert or replace into calls (
@@ -127,7 +129,7 @@ class ReplayStore:
         error: str,
         retry_count: int,
     ) -> None:
-        with sqlite3.connect(self.path) as conn:
+        with _connect(self.path) as conn:
             conn.execute(
                 """
                 insert or replace into calls (
@@ -150,7 +152,7 @@ class ReplayStore:
             )
 
     def done_calls(self, run_id: str) -> list[StoredCall]:
-        with sqlite3.connect(self.path) as conn:
+        with _connect(self.path) as conn:
             rows = conn.execute(
                 """
                 select run_id, trace_id, sample_index, model, params_hash, prompt_hash, status,
@@ -164,7 +166,7 @@ class ReplayStore:
         return [_stored_call_from_row(row) for row in rows]
 
     def status_counts(self, run_id: str) -> dict[str, int]:
-        with sqlite3.connect(self.path) as conn:
+        with _connect(self.path) as conn:
             rows = conn.execute(
                 "select status, count(*) from calls where run_id = ? group by status",
                 (run_id,),
@@ -172,7 +174,7 @@ class ReplayStore:
         return {str(status): int(count) for status, count in rows}
 
     def total_cost(self, run_id: str) -> float:
-        with sqlite3.connect(self.path) as conn:
+        with _connect(self.path) as conn:
             value = conn.execute(
                 """
                 select coalesce(sum(cost_usd), 0.0)
@@ -184,7 +186,7 @@ class ReplayStore:
         return float(value)
 
     def served_models(self, run_id: str) -> list[str]:
-        with sqlite3.connect(self.path) as conn:
+        with _connect(self.path) as conn:
             rows = conn.execute(
                 """
                 select distinct served_model
@@ -199,6 +201,16 @@ class ReplayStore:
 
 def connect(path: Path) -> sqlite3.Connection:
     return sqlite3.connect(path)
+
+
+@contextmanager
+def _connect(path: Path) -> Iterator[sqlite3.Connection]:
+    conn = sqlite3.connect(path)
+    try:
+        yield conn
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _stored_call_from_row(row: tuple[Any, ...]) -> StoredCall:
