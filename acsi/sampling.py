@@ -96,7 +96,7 @@ def deduplicate_traces(records: list[TraceRecord]) -> tuple[list[TraceRecord], l
     representative_shingles: list[set[str]] = []
     collapses: list[DedupCollapse] = []
     for record in records:
-        shingles = character_shingles(_prompt_text(record))
+        shingles = character_shingles(_dedup_text(record))
         matched_index = None
         matched_score = 0.0
         for index, existing in enumerate(representative_shingles):
@@ -273,6 +273,14 @@ def _stratum_value(record: TraceRecord, key: str) -> str:
 
 def _prompt_text(record: TraceRecord) -> str:
     return "\n".join(message.content for message in record.request.messages)
+
+
+def _dedup_text(record: TraceRecord) -> str:
+    return json.dumps(
+        record.model_dump(mode="json"),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 def _records_jsonl(records: list[TraceRecord]) -> str:
