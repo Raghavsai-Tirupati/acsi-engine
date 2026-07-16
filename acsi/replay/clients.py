@@ -210,7 +210,7 @@ def plausible_token_count(text: str | None) -> int:
 def retired_model_message(model: str) -> str:
     return (
         f"Model {model} returned 404; it may be retired. "
-        "M3 will add --degraded to certify against stored outputs."
+        "Rerun with --degraded to certify against stored outputs."
     )
 
 

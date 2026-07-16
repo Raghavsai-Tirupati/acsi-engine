@@ -159,7 +159,7 @@ def test_replay_model_404_aborts_with_retired_model_message(tmp_path: Path) -> N
     traces = _fixture_traces(1)
     model = ProviderModel(provider="anthropic", model="retired-model")
 
-    with pytest.raises(ReplayAbortError, match="may be retired.*--degraded"):
+    with pytest.raises(ReplayAbortError) as exc_info:
         asyncio.run(
             replay(
                 traces,
@@ -170,6 +170,10 @@ def test_replay_model_404_aborts_with_retired_model_message(tmp_path: Path) -> N
                 config=ReplayConfig(run_id="abort-run"),
             )
         )
+    assert str(exc_info.value) == (
+        "Model retired-model returned 404; it may be retired. "
+        "Rerun with --degraded to certify against stored outputs."
+    )
 
 
 class RecordingFakeClient(FakeClient):

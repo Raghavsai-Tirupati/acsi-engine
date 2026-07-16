@@ -145,7 +145,7 @@ def _evaluate_latency_p95(
 def _json_schema_passes(assertion: AssertionConfig, response: DiffResponse) -> bool:
     schema = _config_value(assertion, "schema", default=None)
     if schema is None:
-        raise ValueError("json_schema assertion requires inline schema for M3.")
+        raise ValueError("json_schema assertion requires an inline schema.")
     parsed = parse_json(response.text)
     if not parsed.parsed:
         return False

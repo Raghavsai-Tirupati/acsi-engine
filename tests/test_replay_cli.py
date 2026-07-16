@@ -58,13 +58,15 @@ def test_replay_cli_writes_run_artifacts_and_param_transform(
     assert "HTTP 400" in run_payload["param_transformations"][0]["reason"]
 
 
-def test_replay_cli_degraded_flag_is_m3_placeholder() -> None:
+def test_replay_cli_degraded_flag_is_limited_to_supported_commands() -> None:
     result = CliRunner().invoke(app, ["replay", "--degraded", "--json"])
 
     assert result.exit_code == 1
     payload = json.loads(result.output)
     assert payload["status"] == "error"
-    assert "M3" in payload["message"]
+    assert payload["message"] == (
+        "--degraded is only supported by baseline and full run commands."
+    )
 
 
 def _write_manifest(path: Path) -> None:

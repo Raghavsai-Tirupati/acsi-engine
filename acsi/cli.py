@@ -114,11 +114,11 @@ ManifestOption = Annotated[
 ]
 
 
-def _emit_stub(command: str, milestone: str, json_output: bool) -> None:
-    message = f"`acsi {command}` is scheduled for {milestone}; M0 provides the command surface."
+def _emit_stub(command: str, json_output: bool) -> None:
+    message = f"`acsi {command}` is not implemented in this build."
     if json_output:
         console.print_json(
-            data={"status": "not_implemented", "command": command, "milestone": milestone}
+            data={"status": "not_implemented", "command": command}
         )
     else:
         console.print(message)
@@ -141,7 +141,7 @@ def main(
 def init(
     json_output: JsonOutputOption = False,
 ) -> None:
-    _emit_stub("init", "M1", json_output)
+    _emit_stub("init", json_output)
 
 
 @app.command("import")
@@ -1386,12 +1386,12 @@ def replay(
     fake_noise: Annotated[float, typer.Option("--fake-noise", help="FakeClient noise rate.")] = 0.0,
     degraded: Annotated[
         bool,
-        typer.Option("--degraded", help="M3 baseline degraded mode placeholder."),
+        typer.Option("--degraded", help="Use stored responses when the model is unavailable."),
     ] = False,
     json_output: JsonOutputOption = False,
 ) -> None:
     if degraded:
-        _fail("--degraded is scheduled for M3 baseline mode.", json_output)
+        _fail("--degraded is only supported by baseline and full run commands.", json_output)
     try:
         manifest_model = load_workload_manifest(manifest)
         target_model = _target_model(manifest_model.candidate, target)

@@ -74,7 +74,7 @@ def test_degraded_baseline_skips_retired_model_and_marks_run(tmp_path: Path) -> 
     retired_model = ProviderModel(provider="anthropic", model="retired-model")
     retired_client = FakeClient(retired_models={"retired-model"})
 
-    with pytest.raises(ReplayAbortError, match="may be retired.*--degraded"):
+    with pytest.raises(ReplayAbortError) as exc_info:
         _run_baseline(
             tmp_path / "aborted",
             model=retired_model,
@@ -82,6 +82,10 @@ def test_degraded_baseline_skips_retired_model_and_marks_run(tmp_path: Path) -> 
             run_id="00000000-0000-0000-0000-000000000304",
             trace_count=1,
         )
+    assert str(exc_info.value) == (
+        "Model retired-model returned 404; it may be retired. "
+        "Rerun with --degraded to certify against stored outputs."
+    )
 
     degraded = _run_baseline(
         tmp_path / "degraded",
