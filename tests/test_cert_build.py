@@ -98,6 +98,42 @@ def test_render_rejects_doctored_template(tmp_path: Path) -> None:
         )
 
 
+def test_model_generated_banned_language_is_sanitized(tmp_path: Path) -> None:
+    manifest_path, manifest, traces, run_dir = _write_inputs(tmp_path)
+    _write_json(
+        run_dir / "clusters.json",
+        {
+            "clusters": [
+                {
+                    "cluster_id": "cluster-0",
+                    "description": "guaranteed identical output",
+                    "member_count": 1,
+                    "name": "proven equivalent",
+                    "pair_ids": [str(traces[0].trace_id)],
+                    "severity": "worse_minor",
+                    "share_of_sampled": 1 / 3,
+                }
+            ],
+            "stats": {},
+        },
+    )
+
+    result = build_certificate(
+        manifest=manifest,
+        traces=traces,
+        run_dir=run_dir,
+        manifest_path=manifest_path,
+    )
+    render_report(result.cert, output_path=run_dir / "report.html")
+
+    cert_text = (run_dir / "cert.json").read_text(encoding="utf-8")
+    report_text = (run_dir / "report.html").read_text(encoding="utf-8")
+    assert result.payload["banned_language_sanitization_count"] >= 2
+    assert "term removed" in cert_text
+    assert "guaranteed" not in cert_text
+    assert "proven equivalent" not in report_text
+
+
 def _write_inputs(tmp_path: Path) -> tuple[Path, WorkloadManifest, list, Path]:
     manifest_path = tmp_path / "acsi.yaml"
     manifest_payload = {

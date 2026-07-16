@@ -32,9 +32,12 @@ def publish_certificate(
         raise PublishError("Pass --url or set ACSI_PUBLISH_URL to publish a certificate.")
     cert = json.loads(cert_path.read_text(encoding="utf-8"))
     payload = publish_payload(cert, include_examples=include_examples)
-    with httpx.Client(transport=transport, timeout=30.0) as client:
-        response = client.post(endpoint, json=payload)
-    response.raise_for_status()
+    try:
+        with httpx.Client(transport=transport, timeout=30.0) as client:
+            response = client.post(endpoint, json=payload)
+        response.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise PublishError(f"Publish failed: {exc}") from exc
     return PublishResult(
         status_code=response.status_code,
         payload=payload,

@@ -27,9 +27,9 @@ def test_help_lists_m0_command_surface() -> None:
         assert command in result.output
 
 
-def test_stub_commands_support_json_output() -> None:
+def test_cert_requires_run_id_json_output() -> None:
     result = CliRunner().invoke(app, ["cert", "--json"])
 
-    assert result.exit_code == 2
-    assert '"status": "not_implemented"' in result.output
-    assert '"milestone": "M6"' in result.output
+    assert result.exit_code == 1
+    assert '"status": "error"' in result.output
+    assert "Pass --run" in result.output

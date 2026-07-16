@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from pathlib import Path
 from typing import Annotated
@@ -12,7 +13,15 @@ from rich.table import Table
 
 from acsi import __version__
 from acsi.baseline import run_baseline as run_baseline_stage
+from acsi.cert.build import (
+    BannedLanguageError,
+    CertificateVerificationError,
+    build_certificate,
+    verify_certificate,
+)
+from acsi.cert.render import render_report
 from acsi.config import load_workload_manifest
+from acsi.diff.assertions import AssertionPair, evaluate_assertions
 from acsi.diff.clustering import (
     AssertionFailure,
     CandidatePairRecord,
@@ -22,6 +31,7 @@ from acsi.diff.clustering import (
     name_clusters,
     write_clusters_json,
 )
+from acsi.diff.deterministic import DiffResponse
 from acsi.importers.common import choose_output_path, inventory_table, write_import_artifacts
 from acsi.importers.jsonl import import_jsonl_paths
 from acsi.importers.supabase import (
@@ -55,8 +65,9 @@ from acsi.patch import (
     select_patch_target,
     write_patch_report,
 )
+from acsi.publish import PublishError, publish_certificate
 from acsi.replay.artifacts import RunClock, build_run_manifest, write_run_manifest
-from acsi.replay.clients import FakeClient, LiveClient
+from acsi.replay.clients import FakeClient, LiveClient, RegressionRule
 from acsi.replay.runner import (
     ReplayAbortError,
     ReplayConfig,
@@ -69,7 +80,9 @@ from acsi.replay.runner import (
     replay as replay_traces,
 )
 from acsi.replay.store import ReplayStore, StoredCall
+from acsi.sampling import sample_traces, write_sample_artifacts
 from acsi.schemas import ProviderModel, Severity, TraceRecord, export_json_schemas
+from acsi.scrub import scrub_traces, write_scrub_artifacts
 
 app = typer.Typer(
     help="ACSI replays production LLM traces and certifies model swaps against assertions.",
@@ -343,6 +356,166 @@ def _load_response_calls(path: Path) -> list[StoredCall]:
     return calls
 
 
+def _stored_diff_response(call: StoredCall) -> DiffResponse:
+    response = call.response or {}
+    return DiffResponse(
+        text=response.get("text"),
+        tool_calls=response.get("tool_calls"),
+        finish_reason=response.get("finish_reason"),
+        latency_ms=response.get("latency_ms"),
+    )
+
+
+def _assertion_pairs(
+    traces: list[TraceRecord],
+    baseline_calls: list[StoredCall],
+    candidate_calls: list[StoredCall],
+) -> list[AssertionPair]:
+    baseline_by_trace = {call.trace_id: call for call in baseline_calls if call.sample_index == 0}
+    candidate_by_trace = {call.trace_id: call for call in candidate_calls if call.sample_index == 0}
+    pairs: list[AssertionPair] = []
+    for trace in sorted(traces, key=lambda item: str(item.trace_id)):
+        trace_id = str(trace.trace_id)
+        if trace_id not in baseline_by_trace or trace_id not in candidate_by_trace:
+            continue
+        pairs.append(
+            AssertionPair(
+                trace_id=trace_id,
+                baseline=_stored_diff_response(baseline_by_trace[trace_id]),
+                candidate=_stored_diff_response(candidate_by_trace[trace_id]),
+            )
+        )
+    return pairs
+
+
+def _write_assertion_results(
+    path: Path,
+    traces: list[TraceRecord],
+    baseline_calls: list[StoredCall],
+    candidate_calls: list[StoredCall],
+    manifest_model,
+) -> tuple[str, int]:
+    pairs = _assertion_pairs(traces, baseline_calls, candidate_calls)
+    evaluations = evaluate_assertions(
+        manifest_model.assertions,
+        pairs,
+        max_failures=len(pairs),
+    )
+    rows: list[dict[str, object]] = []
+    for evaluation in evaluations:
+        for trace_id in evaluation.failing_trace_ids:
+            rows.append(
+                {
+                    "assertion_id": evaluation.assertion_id,
+                    "baseline_passed": True,
+                    "candidate_passed": False,
+                    "pair_id": trace_id,
+                    "severity": evaluation.severity.value,
+                    "trace_id": trace_id,
+                }
+            )
+    return _write_jsonl(path, rows), len(rows)
+
+
+def _write_json(path: Path, payload: dict[str, object]) -> str:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    content = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    with path.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(f"{content}\n")
+    digest = hashlib.sha256(f"{content}\n".encode()).hexdigest()
+    with Path(f"{path}.sha256").open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(f"{digest}\n")
+    return digest
+
+
+def _write_jsonl(path: Path, rows: list[dict[str, object]]) -> str:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [json.dumps(row, sort_keys=True, separators=(",", ":")) for row in rows]
+    content = "".join(f"{line}\n" for line in lines)
+    with path.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(content)
+    digest = hashlib.sha256(content.encode()).hexdigest()
+    with Path(f"{path}.sha256").open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(f"{digest}\n")
+    return digest
+
+
+def _load_run_state(run_path: Path, run_id: str) -> tuple[str, dict[str, dict[str, object]]]:
+    if run_path.exists():
+        payload = json.loads(run_path.read_text(encoding="utf-8"))
+        started_at = str(payload.get("run_started_at") or _utc_now())
+        stages = {
+            str(stage): dict(value)
+            for stage, value in (payload.get("stages") or {}).items()
+        }
+        return started_at, stages
+    return _utc_now(), {}
+
+
+def _mark_stage(
+    run_path: Path,
+    *,
+    run_id: str,
+    run_started_at: str,
+    stages: dict[str, dict[str, object]],
+    stage: str,
+    status: str,
+    **details: object,
+) -> None:
+    stages[stage] = {"status": status, **details}
+    payload: dict[str, object] = {}
+    if run_path.exists():
+        payload = json.loads(run_path.read_text(encoding="utf-8"))
+    payload["run_id"] = run_id
+    payload["run_started_at"] = run_started_at
+    payload["stages"] = stages
+    _write_json(run_path, payload)
+
+
+def _stage_finished(stages: dict[str, dict[str, object]], stage: str) -> bool:
+    return stages.get(stage, {}).get("status") in {"completed", "skipped"}
+
+
+def _utc_now() -> str:
+    from datetime import UTC, datetime
+
+    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _candidate_regression_rules(
+    traces: list[TraceRecord],
+    *,
+    broken_json_rate: float,
+    broken_json_token: str | None,
+) -> list[RegressionRule]:
+    broken_ids: set[str] = set()
+    if broken_json_rate > 0:
+        count = max(1, round(len(traces) * broken_json_rate))
+        broken_ids.update(str(trace.trace_id) for trace in traces[:count])
+    if broken_json_token:
+        broken_ids.update(
+            str(trace.trace_id)
+            for trace in traces
+            if broken_json_token in trace.request.messages[0].content
+        )
+    if not broken_ids:
+        return []
+
+    def predicate(prompt: str) -> bool:
+        return any(
+            trace.request.messages[0].content in prompt
+            for trace in traces
+            if str(trace.trace_id) in broken_ids
+        )
+
+    return [
+        RegressionRule(
+            predicate=predicate,
+            transform=lambda _prompt, _text: "{broken",
+        )
+    ]
+
+
 def _votes_from_judgments(
     rows: list[dict[str, object]],
 ) -> dict[str, dict[str, object]]:
@@ -429,14 +602,437 @@ def _candidate_records_for_clustering(
 @app.command()
 def run(
     manifest: ManifestOption = Path("acsi.yaml"),
+    traces: Annotated[
+        Path | None,
+        typer.Option("--traces", help="Normalized TraceRecord JSONL path."),
+    ] = None,
+    run_id: Annotated[
+        str | None,
+        typer.Option("--run-id", help="Resume or create this run id."),
+    ] = None,
+    run_dir: RunDirOption = Path(".acsi"),
+    fake_noise: Annotated[
+        float,
+        typer.Option("--fake-noise", help="FakeClient noise rate for baseline and candidate."),
+    ] = 0.0,
+    inject_broken_json_rate: Annotated[
+        float,
+        typer.Option("--inject-broken-json-rate", help="Break this fraction of sampled prompts."),
+    ] = 0.0,
+    inject_broken_json_token: Annotated[
+        str | None,
+        typer.Option("--inject-broken-json-token", help="Break sampled prompts containing token."),
+    ] = None,
+    degraded: Annotated[
+        bool,
+        typer.Option("--degraded", help="Run baseline in degraded mode."),
+    ] = False,
     yes: Annotated[
         bool,
         typer.Option("--yes", help="Approve provider spend without prompting."),
     ] = False,
     json_output: JsonOutputOption = False,
 ) -> None:
-    _ = (manifest, yes)
-    _emit_stub("run", "M7", json_output)
+    if not yes:
+        _fail("Pass --yes to approve the full run preflight.", json_output)
+    try:
+        manifest_model = load_workload_manifest(manifest)
+        source_traces_path = traces or run_dir / "traces" / f"{manifest_model.workload}.jsonl"
+        source_records = import_jsonl_paths([source_traces_path]).records
+        if not source_records:
+            _fail(f"No valid traces found in {source_traces_path}.", json_output)
+
+        active_run_id = run_id or str(uuid4())
+        active_run_dir = run_dir / "runs" / active_run_id
+        active_run_dir.mkdir(parents=True, exist_ok=True)
+        run_path = active_run_dir / "run.json"
+        run_started_at, stages = _load_run_state(run_path, active_run_id)
+
+        table = Table(title="ACSI Run Preflight")
+        table.add_column("Metric")
+        table.add_column("Value")
+        table.add_row("Traces", str(len(source_records)))
+        table.add_row("Sample target", str(manifest_model.sampling.n))
+        table.add_row(
+            "Baseline",
+            f"{manifest_model.baseline.provider}/{manifest_model.baseline.model}",
+        )
+        table.add_row(
+            "Candidate",
+            f"{manifest_model.candidate.provider}/{manifest_model.candidate.model}",
+        )
+        table.add_row("Estimated cost", "$0.000000 (fake clients)")
+        if not json_output:
+            console.print(table)
+
+        if not _stage_finished(stages, "import-check"):
+            _mark_stage(
+                run_path,
+                run_id=active_run_id,
+                run_started_at=run_started_at,
+                stages=stages,
+                stage="import-check",
+                status="completed",
+                traces=len(source_records),
+            )
+
+        scrubbed_path = active_run_dir / "scrubbed_traces.jsonl"
+        if manifest_model.privacy.scrub:
+            if _stage_finished(stages, "scrub") and scrubbed_path.exists():
+                scrubbed_records = import_jsonl_paths([scrubbed_path]).records
+            else:
+                scrub_result = scrub_traces(source_records)
+                write_scrub_artifacts(
+                    scrub_result,
+                    traces_path=scrubbed_path,
+                    report_path=active_run_dir / "scrub_report.json",
+                )
+                scrubbed_records = scrub_result.records
+                _mark_stage(
+                    run_path,
+                    run_id=active_run_id,
+                    run_started_at=run_started_at,
+                    stages=stages,
+                    stage="scrub",
+                    status="completed",
+                    counts=scrub_result.report.get("counts", {}),
+                )
+        else:
+            scrubbed_records = source_records
+            if not _stage_finished(stages, "scrub"):
+                _mark_stage(
+                    run_path,
+                    run_id=active_run_id,
+                    run_started_at=run_started_at,
+                    stages=stages,
+                    stage="scrub",
+                    status="skipped",
+                    reason="privacy.scrub=false",
+                )
+
+        sampled_path = active_run_dir / "sampled_traces.jsonl"
+        if _stage_finished(stages, "sample") and sampled_path.exists():
+            sampled_records = import_jsonl_paths([sampled_path]).records
+        else:
+            sampling_result = sample_traces(scrubbed_records, manifest_model.sampling)
+            write_sample_artifacts(
+                sampling_result.records,
+                output_path=sampled_path,
+                report_path=active_run_dir / "sampling_report.json",
+                report=sampling_result.report,
+            )
+            sampled_records = sampling_result.records
+            _mark_stage(
+                run_path,
+                run_id=active_run_id,
+                run_started_at=run_started_at,
+                stages=stages,
+                stage="sample",
+                status="completed",
+                mode=sampling_result.sampling_mode,
+                n=len(sampled_records),
+            )
+
+        store = ReplayStore(active_run_dir / "replay.sqlite")
+        if not _stage_finished(stages, "baseline"):
+            baseline_result = asyncio.run(
+                run_baseline_stage(
+                    sampled_records,
+                    manifest_model.baseline,
+                    manifest_model.sampling.k_baseline,
+                    client=FakeClient(seed=manifest_model.sampling.seed, noise=fake_noise),
+                    store=store,
+                    config=ReplayConfig(
+                        run_id=active_run_id,
+                        phase="baseline",
+                        seed=manifest_model.sampling.seed,
+                        concurrency=4,
+                        max_cost_usd=manifest_model.budget.max_usd,
+                    ),
+                    run_dir=active_run_dir,
+                    manifest_path=manifest,
+                    traces_path=sampled_path,
+                    endpoint="degraded" if degraded else "fake",
+                    degraded=degraded,
+                )
+            )
+            write_responses_jsonl(
+                store,
+                active_run_id,
+                active_run_dir / "baseline" / "responses.jsonl",
+                phase="baseline",
+            )
+            _mark_stage(
+                run_path,
+                run_id=active_run_id,
+                run_started_at=run_started_at,
+                stages=stages,
+                stage="baseline",
+                status="completed",
+                degraded=degraded,
+                dispatched=baseline_result.replay_result.dispatched,
+            )
+
+        if not _stage_finished(stages, "replay"):
+            candidate_client = FakeClient(
+                seed=manifest_model.sampling.seed,
+                noise=fake_noise,
+                regressions=_candidate_regression_rules(
+                    sampled_records,
+                    broken_json_rate=inject_broken_json_rate,
+                    broken_json_token=inject_broken_json_token,
+                ),
+            )
+            clock = RunClock()
+            replay_result = asyncio.run(
+                replay_traces(
+                    sampled_records,
+                    manifest_model.candidate,
+                    1,
+                    client=candidate_client,
+                    store=store,
+                    config=ReplayConfig(
+                        run_id=active_run_id,
+                        phase="candidate",
+                        seed=manifest_model.sampling.seed,
+                        concurrency=4,
+                        max_cost_usd=manifest_model.budget.max_usd,
+                    ),
+                )
+            )
+            write_responses_jsonl(
+                store,
+                active_run_id,
+                active_run_dir / "candidate" / "responses.jsonl",
+                phase="candidate",
+            )
+            run_manifest = build_run_manifest(
+                run_id=active_run_id,
+                manifest_path=manifest,
+                traces_path=sampled_path,
+                seed=manifest_model.sampling.seed,
+                provider=manifest_model.candidate.provider,
+                endpoint="fake",
+                store=store,
+                result=replay_result,
+                wall_clock_seconds=clock.elapsed_seconds(),
+                degraded=degraded,
+                phase="candidate",
+                run_started_at=run_started_at,
+                stages=stages,
+            )
+            write_run_manifest(run_path, run_manifest)
+            _mark_stage(
+                run_path,
+                run_id=active_run_id,
+                run_started_at=run_started_at,
+                stages=stages,
+                stage="replay",
+                status="completed",
+                dispatched=replay_result.dispatched,
+            )
+
+        baseline_calls = _load_response_calls(active_run_dir / "baseline" / "responses.jsonl")
+        candidate_calls = _load_response_calls(active_run_dir / "candidate" / "responses.jsonl")
+
+        if not _stage_finished(stages, "diff"):
+            assertion_hash, assertion_failures = _write_assertion_results(
+                active_run_dir / "assertion_results.jsonl",
+                sampled_records,
+                baseline_calls,
+                candidate_calls,
+                manifest_model,
+            )
+            _mark_stage(
+                run_path,
+                run_id=active_run_id,
+                run_started_at=run_started_at,
+                stages=stages,
+                stage="diff",
+                status="completed",
+                assertion_failures=assertion_failures,
+                sha256=assertion_hash,
+            )
+
+        if not _stage_finished(stages, "judge"):
+            tau = _load_noise_tau(active_run_dir)
+            pairs = build_candidate_pairs(
+                sampled_records,
+                baseline_calls,
+                candidate_calls,
+                tau=tau,
+            )
+            selected = select_for_judging(pairs, tau)
+            panel = select_judge_panel(manifest_model)
+            clients = {
+                judge_spec.model: FakeJudge(model=judge_spec.model)
+                for judge_spec in panel
+            }
+            judge_result = run_pairwise_judging(
+                selected,
+                clients,
+                store=store,
+                config=JudgeRunConfig(
+                    run_id=active_run_id,
+                    seed=manifest_model.sampling.seed,
+                ),
+            )
+            judgments_hash, stats_hash = write_judge_artifacts(
+                active_run_dir,
+                judge_result,
+            )
+            _mark_stage(
+                run_path,
+                run_id=active_run_id,
+                run_started_at=run_started_at,
+                stages=stages,
+                stage="judge",
+                status="completed",
+                selected_pairs=len(selected),
+                judgments_sha256=judgments_hash,
+                stats_sha256=stats_hash,
+            )
+
+        if not _stage_finished(stages, "cluster"):
+            judgments = _load_judgment_rows(active_run_dir / "judgments.jsonl")
+            assertion_failures = _load_assertion_failures(
+                active_run_dir / "assertion_results.jsonl"
+            )
+            records = _candidate_records_for_clustering(
+                sampled_records,
+                baseline_calls,
+                candidate_calls,
+                judgments,
+                assertion_failures,
+            )
+            regressions = build_regression_set(records)
+            buckets = cluster_regressions(
+                regressions,
+                n_sampled_pairs=len(sampled_records),
+                min_cluster_size=manifest_model.clustering.min_cluster_size,
+            )
+            named, stats = name_clusters(
+                buckets,
+                namer=FakeNamer(),
+                store=store,
+                run_id=active_run_id,
+            )
+            clusters_hash = write_clusters_json(
+                active_run_dir / "clusters.json",
+                named,
+                stats=stats,
+            )
+            detection = detect_templates(sampled_records)
+            target = select_patch_target(sampled_records, detection)
+            patch_reports: list[PatchReport] = []
+            patches_dir = active_run_dir / "patches"
+            for bucket in named:
+                proposal, _patch_stats = propose_patch(
+                    cluster=bucket,
+                    regressions=regressions,
+                    target=target,
+                    patcher=FakePatcher(),
+                    store=store,
+                    run_id=active_run_id,
+                )
+                if proposal is None:
+                    continue
+                diff_path = patches_dir / f"patch_{bucket.cluster_id}.diff"
+                diff_path.parent.mkdir(parents=True, exist_ok=True)
+                with diff_path.open("w", encoding="utf-8", newline="\n") as handle:
+                    handle.write(proposal.diff_text)
+                patch_reports.append(
+                    PatchReport(
+                        cluster_id=bucket.cluster_id,
+                        diff_path=str(diff_path),
+                        fixed_fraction=0.0,
+                        control_regressions=0,
+                        accepted=False,
+                        reason="not_validated_orchestrator",
+                    )
+                )
+            patch_hash = write_patch_report(patches_dir / "patch_report.json", patch_reports)
+            _mark_stage(
+                run_path,
+                run_id=active_run_id,
+                run_started_at=run_started_at,
+                stages=stages,
+                stage="cluster",
+                status="completed",
+                clusters=len(named),
+                clusters_sha256=clusters_hash,
+                patches_sha256=patch_hash,
+            )
+
+        cert_result = None
+        if not _stage_finished(stages, "cert"):
+            cert_result = build_certificate(
+                manifest=manifest_model,
+                traces=sampled_records,
+                run_dir=active_run_dir,
+                manifest_path=manifest,
+                degraded=degraded,
+            )
+            report_hash = render_report(
+                cert_result.cert,
+                output_path=active_run_dir / "report.html",
+            )
+            _mark_stage(
+                run_path,
+                run_id=active_run_id,
+                run_started_at=run_started_at,
+                stages=stages,
+                stage="verdict",
+                status="completed",
+                verdict=cert_result.payload["verdict"],
+            )
+            _mark_stage(
+                run_path,
+                run_id=active_run_id,
+                run_started_at=run_started_at,
+                stages=stages,
+                stage="cert",
+                status="completed",
+                cert_sha256=cert_result.cert_sha256,
+                report_sha256=report_hash,
+            )
+        else:
+            cert_payload = json.loads(
+                (active_run_dir / "cert.json").read_text(encoding="utf-8")
+            )
+            cert_result = type(
+                "CertResult",
+                (),
+                {
+                    "cert_sha256": (active_run_dir / "cert.json.sha256")
+                    .read_text(encoding="utf-8")
+                    .strip(),
+                    "payload": cert_payload["payload"],
+                },
+            )()
+    except (
+        BannedLanguageError,
+        CertificateVerificationError,
+        OSError,
+        ReplayAbortError,
+        ReplayInterrupted,
+        ValueError,
+    ) as exc:
+        _fail(str(exc), json_output)
+
+    payload = {
+        "status": "ok",
+        "run_id": active_run_id,
+        "run_dir": str(active_run_dir),
+        "verdict": cert_result.payload["verdict"],
+        "cert_path": str(active_run_dir / "cert.json"),
+        "cert_sha256": cert_result.cert_sha256,
+        "report_path": str(active_run_dir / "report.html"),
+    }
+    if json_output:
+        console.print_json(data=payload)
+    else:
+        console.print_json(data=payload)
 
 
 @app.command()
@@ -505,6 +1101,7 @@ def baseline(
                 store=ReplayStore(active_run_dir / "replay.sqlite"),
                 config=ReplayConfig(
                     run_id=active_run_id,
+                    phase="baseline",
                     seed=seed,
                     concurrency=concurrency,
                     max_cost_usd=max_cost_usd,
@@ -894,11 +1491,50 @@ def judge(
 
 @app.command()
 def cert(
+    run_id: Annotated[
+        str | None,
+        typer.Option("--run", help="Run id under --run-dir/runs to certify."),
+    ] = None,
+    manifest: ManifestOption = Path("acsi.yaml"),
+    traces: Annotated[
+        Path | None,
+        typer.Option("--traces", help="Sampled TraceRecord JSONL path."),
+    ] = None,
     run_dir: RunDirOption = Path(".acsi"),
     json_output: JsonOutputOption = False,
 ) -> None:
-    _ = run_dir
-    _emit_stub("cert", "M6", json_output)
+    if run_id is None:
+        _fail("Pass --run with the run id to certify.", json_output)
+    try:
+        manifest_model = load_workload_manifest(manifest)
+        active_run_dir = run_dir / "runs" / run_id
+        traces_path = traces or active_run_dir / "sampled_traces.jsonl"
+        trace_records = import_jsonl_paths([traces_path]).records
+        result = build_certificate(
+            manifest=manifest_model,
+            traces=trace_records,
+            run_dir=active_run_dir,
+            manifest_path=manifest,
+        )
+        report_hash = render_report(result.cert, output_path=active_run_dir / "report.html")
+    except (BannedLanguageError, OSError, ValueError) as exc:
+        _fail(str(exc), json_output)
+
+    payload = {
+        "status": "ok",
+        "run_id": run_id,
+        "run_dir": str(active_run_dir),
+        "verdict": result.payload["verdict"],
+        "cert_sha256": result.cert_sha256,
+        "report_sha256": report_hash,
+        "key_generated": result.key_generated,
+    }
+    if json_output:
+        console.print_json(data=payload)
+    else:
+        if result.key_generated:
+            console.print("Generated .acsi/keys/ed25519.key for certificate signing.")
+        console.print_json(data=payload)
 
 
 @app.command()
@@ -926,16 +1562,35 @@ def verify(
     cert_path: Annotated[Path, typer.Argument(help="Path to cert.json.")],
     json_output: JsonOutputOption = False,
 ) -> None:
-    _ = cert_path
-    _emit_stub("verify", "M6", json_output)
+    try:
+        cert_payload = verify_certificate(cert_path)
+    except (CertificateVerificationError, OSError, ValueError) as exc:
+        _fail(str(exc), json_output)
+    payload = {
+        "status": "ok",
+        "path": str(cert_path),
+        "verdict": cert_payload["payload"].get("verdict"),
+    }
+    if json_output:
+        console.print_json(data=payload)
+    else:
+        console.print("Certificate signature verified.")
 
 
 @app.command()
 def publish(
-    cert_path: Annotated[Path, typer.Argument(help="Path to cert.json.")],
-    endpoint: Annotated[
+    run_id: Annotated[
         str | None,
-        typer.Option("--endpoint", help="Explicit publish endpoint for verdict JSON."),
+        typer.Option("--run", help="Run id under --run-dir/runs to publish."),
+    ] = None,
+    cert_path: Annotated[
+        Path | None,
+        typer.Option("--cert", help="Explicit cert.json path."),
+    ] = None,
+    run_dir: RunDirOption = Path(".acsi"),
+    url: Annotated[
+        str | None,
+        typer.Option("--url", "--endpoint", help="Explicit publish endpoint for verdict JSON."),
     ] = None,
     include_examples: Annotated[
         bool,
@@ -946,8 +1601,27 @@ def publish(
     ] = False,
     json_output: JsonOutputOption = False,
 ) -> None:
-    _ = (cert_path, endpoint, include_examples)
-    _emit_stub("publish", "post-M6", json_output)
+    if cert_path is None:
+        if run_id is None:
+            _fail("Pass --run or --cert to publish a certificate.", json_output)
+        cert_path = run_dir / "runs" / run_id / "cert.json"
+    try:
+        result = publish_certificate(
+            cert_path,
+            url=url,
+            include_examples=include_examples,
+        )
+    except (PublishError, OSError, ValueError) as exc:
+        _fail(str(exc), json_output)
+    payload = {
+        "status": "ok",
+        "status_code": result.status_code,
+        "published_keys": sorted(result.payload.keys()),
+    }
+    if json_output:
+        console.print_json(data=payload)
+    else:
+        console.print_json(data=payload)
 
 
 @schema_app.command("export")
