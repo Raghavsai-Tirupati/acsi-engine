@@ -8,6 +8,8 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from acsi.replay.routing import provider_route
+
 
 class ReplayClientError(RuntimeError):
     retryable = False
@@ -156,13 +158,18 @@ class LiveClient:
         except ImportError as exc:
             raise PermanentError("Install litellm to use live replay.", run_level=True) from exc
 
+        route = provider_route(request.provider, request.model)
+        completion_kwargs: dict[str, Any] = {
+            "model": route.litellm_model,
+            "messages": _litellm_messages(request),
+            **request.params,
+        }
+        if route.api_base:
+            completion_kwargs["api_base"] = route.api_base
+
         started = time.perf_counter()
         try:
-            raw_response = litellm.completion(
-                model=_litellm_model_name(request.provider, request.model),
-                messages=_litellm_messages(request),
-                **request.params,
-            )
+            raw_response = litellm.completion(**completion_kwargs)
         except Exception as exc:
             raise _map_litellm_error(exc, request.model) from exc
 
@@ -219,10 +226,6 @@ def live_client_keys_present() -> bool:
         os.environ.get(name)
         for name in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY")
     )
-
-
-def _litellm_model_name(provider: str, model: str) -> str:
-    return model if model.startswith(f"{provider}/") else f"{provider}/{model}"
 
 
 def _litellm_messages(request: CompletionRequest) -> list[dict[str, str]]:
