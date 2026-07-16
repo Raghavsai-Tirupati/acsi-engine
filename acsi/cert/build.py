@@ -89,6 +89,7 @@ def build_certificate(
 
     n = len(traces)
     candidate_ci = _candidate_regression_ci(judgment_rows, traces, manifest.sampling.seed)
+    regressed_pairs = _regressed_pairs(assertion_rows, judgment_rows, n=len(traces))
     noise_ci = _noise_floor_ci(noise_floor)
     degraded_mode = degraded or bool(noise_floor.get("degraded")) or noise_ci is None
     critical_failures = _critical_failure_count(assertion_rows)
@@ -185,6 +186,7 @@ def build_certificate(
         "mode": "degraded" if degraded_mode else "standard",
         "noise_floor": noise_ci,
         "noise_floor_raw": noise_floor,
+        "regressed_pairs": regressed_pairs,
         "run_id": run_id,
         "run_started_at": run_started_at,
         "scope": {
@@ -327,6 +329,45 @@ def _candidate_regression_ci(
     return _ci_payload(ci.mean, ci.lower, ci.upper, ci.confidence)
 
 
+def _regressed_pairs(
+    assertion_rows: list[dict[str, Any]],
+    judgment_rows: list[dict[str, Any]],
+    *,
+    n: int,
+) -> dict[str, Any]:
+    assertion_pairs = {
+        str(row.get("pair_id") or row.get("trace_id"))
+        for row in assertion_rows
+        if str(row.get("severity")) in {"critical", "major"}
+        and row.get("baseline_passed") is True
+        and row.get("candidate_passed") is False
+    }
+    votes: dict[str, dict[str, CandidateOutcome | None]] = {}
+    for row in judgment_rows:
+        outcome = row.get("outcome")
+        parsed_outcome = None if outcome is None else str(outcome)
+        votes.setdefault(str(row["pair_id"]), {})[str(row["judge"])] = parsed_outcome  # type: ignore[assignment]
+    outcomes = aggregate_pair_outcomes(votes)
+    judge_pairs = {
+        pair_id
+        for pair_id, outcome in outcomes.items()
+        if outcome in REGRESSION_OUTCOMES
+    }
+    both = assertion_pairs & judge_pairs
+    assertion_only = assertion_pairs - judge_pairs
+    judge_only = judge_pairs - assertion_pairs
+    count = len(assertion_only) + len(judge_only) + len(both)
+    return {
+        "by_source": {
+            "assertion": len(assertion_only),
+            "both": len(both),
+            "judge": len(judge_only),
+        },
+        "count": count,
+        "rate": round(count / n, 12) if n else 0.0,
+    }
+
+
 def _noise_floor_ci(noise_floor: dict[str, Any]) -> dict[str, float] | None:
     if noise_floor.get("degraded") or noise_floor.get("noise_floor") == "unavailable":
         return None
@@ -458,9 +499,12 @@ def _coverage_sentence(
     ci: dict[str, float],
     degraded: bool,
 ) -> str:
+    # SPEC-NOTE: SPEC §7 originally pinned a sentence containing the banned term
+    # "guarantee"; M6's certificate language gate correctly rejects that term.
+    # M6.5 locks this replacement as the canonical contract sentence.
     base = (
         f"{verdict} at n={n}, covering {pct:.1f}% of production template distribution, "
-        f"95% CI [{ci['lower']:.1%}, {ci['upper']:.1%}]. "
+        f"95% CI {_coverage_ci_text(ci)}. "
         "This certifies the sampled workload against the stated assertions; "
         "it does not certify unsampled inputs."
     )
@@ -470,6 +514,16 @@ def _coverage_sentence(
             "behavioral-variance comparison was not performed."
         )
     return base
+
+
+def _coverage_ci_text(ci: dict[str, float]) -> str:
+    return f"[{_format_ci_percent(ci['lower'])}, {_format_ci_percent(ci['upper'])}]"
+
+
+def _format_ci_percent(value: float) -> str:
+    percent = value * 100
+    digits = 2 if 0 < abs(percent) < 0.1 else 1
+    return f"{percent:.{digits}f}%"
 
 
 def _coverage_percent(sampling_report: dict[str, Any], traces: list[TraceRecord]) -> float:
@@ -497,14 +551,47 @@ def _judge_panel(judge_stats: dict[str, Any]) -> dict[str, Any]:
     judges = sorted((judge_stats.get("judges") or {}).keys())
     ensemble = judge_stats.get("ensemble") or {}
     calibration = judge_stats.get("calibration") or {}
+    run = judge_stats.get("run") or {}
+    completed_pairs = int(run.get("completed_pairs") or 0)
+    agreement_percent = ensemble.get("raw_agreement_percent")
+    krippendorff_alpha = ensemble.get("krippendorff_alpha")
+    calibration_accuracy = calibration.get("accuracy")
     return {
-        "agreement_percent": ensemble.get("raw_agreement_percent"),
-        "calibration_accuracy": calibration.get("accuracy"),
+        "agreement_percent": agreement_percent,
+        "agreement_reason": _judge_unavailable_reason(
+            value=agreement_percent,
+            completed_pairs=completed_pairs,
+            judges=judges,
+        ),
+        "calibration_accuracy": calibration_accuracy,
+        "calibration_accuracy_reason": (
+            None if calibration_accuracy is not None else "no calibration set provided"
+        ),
         "families": sorted({str(judge).split("/", 1)[0] for judge in judges}),
-        "krippendorff_alpha": ensemble.get("krippendorff_alpha"),
+        "krippendorff_alpha": krippendorff_alpha,
+        "krippendorff_alpha_reason": _judge_unavailable_reason(
+            value=krippendorff_alpha,
+            completed_pairs=completed_pairs,
+            judges=judges,
+        ),
         "models": judges,
         "order_swap": True,
     }
+
+
+def _judge_unavailable_reason(
+    *,
+    value: object,
+    completed_pairs: int,
+    judges: list[str],
+) -> str | None:
+    if value is not None:
+        return None
+    if completed_pairs == 0:
+        return "no pairs required judging"
+    if len(judges) < 2:
+        return "alpha requires ≥2 judges"
+    return "no pairs required judging"
 
 
 def _cost_latency_payload(
