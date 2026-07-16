@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import http.client
 import json
 import threading
@@ -10,7 +11,7 @@ import pytest
 from typer.testing import CliRunner
 
 import acsi.review as review_module
-from acsi.cert.build import build_certificate, verify_certificate
+from acsi.cert.build import BANNED_RE, build_certificate, verify_certificate
 from acsi.cert.render import render_report
 from acsi.cli import app
 from acsi.importers.jsonl import import_jsonl_paths
@@ -93,18 +94,29 @@ def test_review_server_handles_keyboard_interrupt_cleanly(monkeypatch) -> None:
 
 def test_review_api_appends_overrides_without_mutating_judgments(tmp_path: Path) -> None:
     manifest_path, _manifest, traces, run_root, active_run_dir = _write_run(tmp_path, n=3)
+    unresolved_pair_ids = [str(traces[0].trace_id), str(traces[2].trace_id)]
     _write_jsonl(
         active_run_dir / "judgments.jsonl",
         [
             {
                 "judge": "openai/judge-a",
                 "outcome": "worse_minor",
-                "pair_id": str(traces[0].trace_id),
+                "pair_id": unresolved_pair_ids[0],
             },
             {
                 "judge": "openai/judge-b",
                 "outcome": "equivalent",
-                "pair_id": str(traces[0].trace_id),
+                "pair_id": unresolved_pair_ids[0],
+            },
+            {
+                "judge": "openai/judge-a",
+                "outcome": "worse_minor",
+                "pair_id": unresolved_pair_ids[1],
+            },
+            {
+                "judge": "openai/judge-b",
+                "outcome": "equivalent",
+                "pair_id": unresolved_pair_ids[1],
             },
         ],
     )
@@ -121,6 +133,7 @@ def test_review_api_appends_overrides_without_mutating_judgments(tmp_path: Path)
         ],
     )
     before_judgments = (active_run_dir / "judgments.jsonl").read_bytes()
+    before_judgments_sha = hashlib.sha256(before_judgments).hexdigest()
     server = create_review_server(
         run_id=RUN_ID,
         run_dir=run_root,
@@ -130,10 +143,11 @@ def test_review_api_appends_overrides_without_mutating_judgments(tmp_path: Path)
     thread = threading.Thread(target=server.serve_forever)
     thread.start()
     try:
+        run_body = _request(server.server_address[1], "GET", "/api/run")
         payload = json.dumps(
             {
                 "note": "human reviewer accepted semantic equivalence",
-                "pair_id": str(traces[0].trace_id),
+                "pair_id": unresolved_pair_ids[0],
                 "to_outcome": "equivalent",
             }
         )
@@ -145,7 +159,6 @@ def test_review_api_appends_overrides_without_mutating_judgments(tmp_path: Path)
             json.dumps({"pair_id": str(traces[1].trace_id), "to_outcome": "equivalent"}),
             expected_status=400,
         )
-        run_body = _request(server.server_address[1], "GET", "/api/run")
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -153,10 +166,13 @@ def test_review_api_appends_overrides_without_mutating_judgments(tmp_path: Path)
 
     assert json.loads(override_body)["to_outcome"] == "equivalent"
     assert "Assertion-derived outcomes are not overridable." in assertion_body
-    assert (active_run_dir / "judgments.jsonl").read_bytes() == before_judgments
+    after_judgments = (active_run_dir / "judgments.jsonl").read_bytes()
+    assert after_judgments == before_judgments
+    assert hashlib.sha256(after_judgments).hexdigest() == before_judgments_sha
     assert len((active_run_dir / "overrides.jsonl").read_text(encoding="utf-8").splitlines()) == 1
     assert json.loads(run_body)["unresolved_queue"] == [
-        {"outcome": "unresolved", "pair_id": str(traces[0].trace_id)}
+        {"outcome": "unresolved", "pair_id": pair_id}
+        for pair_id in sorted(unresolved_pair_ids)
     ]
 
 
@@ -312,6 +328,7 @@ def test_override_notes_are_sanitized_on_cert_ingestion(tmp_path: Path) -> None:
     )
     cert_text = (active_run_dir / "cert.json").read_text(encoding="utf-8")
     assert result.payload["banned_language_sanitization_count"] >= 2
+    assert len(BANNED_RE.findall(cert_text)) == 0
     assert "guaranteed" not in cert_text
     assert "identical" not in cert_text
     assert "term removed" in cert_text
