@@ -27,9 +27,8 @@ def test_help_lists_m0_command_surface() -> None:
 
 
 def test_stub_commands_support_json_output() -> None:
-    result = CliRunner().invoke(app, ["replay", "--json"])
+    result = CliRunner().invoke(app, ["judge", "--json"])
 
     assert result.exit_code == 2
     assert '"status": "not_implemented"' in result.output
-    assert '"milestone": "M2"' in result.output
-
+    assert '"milestone": "M4"' in result.output
