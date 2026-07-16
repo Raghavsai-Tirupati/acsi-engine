@@ -149,7 +149,7 @@ def _write_inputs(tmp_path: Path) -> tuple[Path, WorkloadManifest, list, Path]:
         "privacy": {"egress": "hosted_api", "scrub": True},
         "sampling": {"k_baseline": 2, "n": 3, "seed": 42, "stratify_by": []},
         "thresholds": {"confidence": 0.95, "epsilon_pp": 2.0, "max_critical": 0},
-        "workload": "volunteer-application-summary",
+        "workload": "support-ticket-summary",
     }
     manifest_path.write_text(
         json.dumps(manifest_payload, sort_keys=True) + "\n",

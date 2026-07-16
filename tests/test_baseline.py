@@ -185,7 +185,7 @@ def _write_manifest(path: Path, model: ProviderModel) -> None:
         "privacy": {"egress": "hosted_api", "scrub": True},
         "sampling": {"k_baseline": 2, "n": 300, "seed": 42, "stratify_by": []},
         "thresholds": {"confidence": 0.95, "epsilon_pp": 2.0, "max_critical": 0},
-        "workload": "volunteer-application-summary",
+        "workload": "support-ticket-summary",
     }
     with path.open("w", encoding="utf-8", newline="\n") as handle:
         handle.write(json.dumps(payload, sort_keys=True))

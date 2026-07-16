@@ -71,7 +71,7 @@ def test_replay_cli_degraded_flag_is_limited_to_supported_commands() -> None:
 
 def _write_manifest(path: Path) -> None:
     payload = {
-        "workload": "volunteer-application-summary",
+        "workload": "support-ticket-summary",
         "baseline": {"provider": "anthropic", "model": "claude-haiku-4-5-20251001"},
         "candidate": {"provider": "anthropic", "model": "claude-sonnet-5"},
         "sampling": {"n": 1, "stratify_by": [], "seed": 42, "k_baseline": 2},

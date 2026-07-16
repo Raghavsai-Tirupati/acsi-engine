@@ -119,7 +119,7 @@ def _write_manifest(path: Path) -> Path:
         "privacy": {"egress": "hosted_api", "scrub": True},
         "sampling": {"k_baseline": 2, "n": 300, "seed": 42, "stratify_by": ["template_id"]},
         "thresholds": {"confidence": 0.95, "epsilon_pp": 2.0, "max_critical": 0},
-        "workload": "volunteer-application-summary",
+        "workload": "support-ticket-summary",
     }
     path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
     return path

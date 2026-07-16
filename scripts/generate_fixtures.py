@@ -75,7 +75,7 @@ def generate_records(count: int = 300, seed: int = 42) -> list[dict[str, object]
                 "trace_id": trace_id,
                 "ts": (base_ts + timedelta(seconds=index)).isoformat().replace("+00:00", "Z"),
                 "source": "jsonl",
-                "workload": "volunteer-application-summary",
+                "workload": "support-ticket-summary",
                 "request": {
                     "provider": "anthropic",
                     "model": "claude-haiku-4-5-20251001",

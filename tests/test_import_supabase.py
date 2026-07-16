@@ -16,7 +16,7 @@ from acsi.importers.supabase import (
 )
 from scripts.generate_fixtures import generate_records
 
-WORKLOAD = "volunteer-application-summary"
+WORKLOAD = "support-ticket-summary"
 
 
 def test_supabase_import_paginates_with_mock_transport() -> None:
