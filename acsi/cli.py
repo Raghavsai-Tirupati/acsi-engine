@@ -514,9 +514,18 @@ def _candidate_regression_rules(
     return [
         RegressionRule(
             predicate=predicate,
-            transform=lambda _prompt, _text: "{broken",
+            transform=lambda prompt, _text: _broken_json_payload(prompt),
         )
     ]
+
+
+def _broken_json_payload(prompt: str) -> str:
+    digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+    return (
+        '{"ACSI_DEMO_BROKEN_JSON":true,'
+        f'"garbage_key_{digest[:8]}":"token_{digest[8:16]}",'
+        f'"garbage_key_{digest[16:24]}":'
+    )
 
 
 def _votes_from_judgments(
@@ -925,7 +934,7 @@ def run(
             )
             named, stats = name_clusters(
                 buckets,
-                namer=FakeNamer(),
+                namer=_fake_namer(),
                 store=store,
                 run_id=active_run_id,
             )
@@ -1107,8 +1116,11 @@ def _write_demo_manifest(path: Path) -> Path:
         "candidate": {"provider": "anthropic", "model": "claude-sonnet-5"},
         "judging": {
             "families_allowed": ["openai"],
-            "judges": [{"model": "openai/fake-judge"}],
-            "min_judges": 1,
+            "judges": [
+                {"model": "openai/fake-judge-a"},
+                {"model": "openai/fake-judge-b"},
+            ],
+            "min_judges": 2,
         },
         "privacy": {"egress": "hosted_api", "scrub": True},
         "sampling": {"k_baseline": 2, "n": 300, "seed": 42, "stratify_by": ["template_id"]},
@@ -1203,6 +1215,21 @@ def _quiet_run_error(output: str, run_id: str) -> str:
     if isinstance(message, str):
         return f"Demo run {run_id} failed: {message}"
     return f"Demo run {run_id} failed."
+
+
+def _fake_namer() -> FakeNamer:
+    return FakeNamer(
+        names={
+            "all_regressions": (
+                "Broken JSON output",
+                "Candidate emitted malformed JSON for strict JSON prompts.",
+            ),
+            "cluster-0": (
+                "Broken JSON output",
+                "Candidate emitted malformed JSON for strict JSON prompts.",
+            ),
+        }
+    )
 
 
 @app.command()
@@ -1487,7 +1514,7 @@ def cluster(
         )
         named, stats = name_clusters(
             buckets,
-            namer=FakeNamer(),
+            namer=_fake_namer(),
             store=ReplayStore(active_run_dir / "replay.sqlite"),
             run_id=run_id,
         )

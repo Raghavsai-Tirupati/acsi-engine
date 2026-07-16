@@ -47,6 +47,7 @@ class FakeJudge:
     ) -> None:
         self.model = model
         self.seed = seed
+        self.uses_default_oracle = oracle is None
         self.oracle = oracle or (lambda _pair_id: "equivalent")
         self.classifier_oracle = classifier_oracle or (lambda _pair_id: True)
         self.error_rate = error_rate
@@ -68,7 +69,7 @@ class FakeJudge:
         elif request.params.get("mode") == "classifier":
             text = self._classifier_text(pair_id, ordering)
         else:
-            text = self._pairwise_text(pair_id, _ordering_value(ordering))
+            text = self._pairwise_text(pair_id, _ordering_value(ordering), request.prompt_text)
 
         return CompletionResponse(
             text=text,
@@ -82,8 +83,10 @@ class FakeJudge:
             served_model=self.model,
         )
 
-    def _pairwise_text(self, pair_id: str, ordering: Ordering) -> str:
+    def _pairwise_text(self, pair_id: str, ordering: Ordering, prompt_text: str) -> str:
         outcome = self.oracle(pair_id)
+        if self.uses_default_oracle and "ACSI_DEMO_BROKEN_JSON" in prompt_text:
+            outcome = "worse_critical"
         if _draw(self.seed, pair_id, ordering, "error") < self.error_rate:
             outcome = _wrong_outcome(outcome)
         if _draw(self.seed, pair_id, ordering, "position") < self.positional_bias:
