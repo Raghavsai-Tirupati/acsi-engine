@@ -10,6 +10,11 @@ from rich.console import Console
 from acsi import __version__
 from acsi.importers.common import choose_output_path, inventory_table, write_import_artifacts
 from acsi.importers.jsonl import import_jsonl_paths
+from acsi.importers.supabase import (
+    SupabaseConfig,
+    SupabaseImportError,
+    import_supabase_records,
+)
 from acsi.schemas import export_json_schemas
 
 app = typer.Typer(
@@ -92,16 +97,23 @@ def import_(
                 _fail("Pass at least one JSONL input path.", json_output)
             result = import_jsonl_paths(input_paths, warn=err_console.print)
         elif source == "supabase":
-            _fail("Supabase import is not implemented in this module yet.", json_output)
+            if input_paths:
+                _fail("Supabase import does not accept input path arguments.", json_output)
+            if not workload:
+                _fail("Pass --workload to import Supabase traces.", json_output)
+            result = import_supabase_records(
+                SupabaseConfig.from_env(),
+                workload=workload,
+                since=since,
+            )
         else:
             _fail("Unsupported importer. Use `jsonl` or `supabase`.", json_output)
 
-        output_path = choose_output_path(result.records, out)
+        output_path = choose_output_path(result.records, out, workload=workload)
         digest = write_import_artifacts(result, output_path)
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, SupabaseImportError) as exc:
         _fail(str(exc), json_output)
 
-    _ = (workload, since)
     payload = result.summary.to_payload(output_path=output_path, sha256=digest)
     if json_output:
         console.print_json(data=payload)

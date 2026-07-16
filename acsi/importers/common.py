@@ -165,9 +165,15 @@ class ImportAccumulator:
         )
 
 
-def choose_output_path(records: list[TraceRecord], explicit_out: Path | None) -> Path:
+def choose_output_path(
+    records: list[TraceRecord],
+    explicit_out: Path | None,
+    workload: str | None = None,
+) -> Path:
     if explicit_out is not None:
         return explicit_out
+    if workload:
+        return Path(".acsi") / "traces" / f"{workload}.jsonl"
     workloads = {record.workload for record in records}
     if not workloads:
         raise ValueError("No valid traces were imported; pass --out to choose an output path.")
