@@ -51,6 +51,7 @@ from acsi.judge.clients import (
 )
 from acsi.judge.ensemble import aggregate_pair_outcomes
 from acsi.judge.runner import (
+    JudgeInterrupted,
     JudgeRunConfig,
     build_candidate_pairs,
     run_pairwise_judging,
@@ -623,6 +624,14 @@ def run(
         str | None,
         typer.Option("--inject-broken-json-token", help="Break sampled prompts containing token."),
     ] = None,
+    interrupt_after_judge_dispatches: Annotated[
+        int | None,
+        typer.Option(
+            "--interrupt-after-judge-dispatches",
+            help="Testing hook: interrupt during judge dispatch.",
+            hidden=True,
+        ),
+    ] = None,
     degraded: Annotated[
         bool,
         typer.Option("--degraded", help="Run baseline in degraded mode."),
@@ -875,6 +884,7 @@ def run(
                 config=JudgeRunConfig(
                     run_id=active_run_id,
                     seed=manifest_model.sampling.seed,
+                    interrupt_after_dispatches=interrupt_after_judge_dispatches,
                 ),
             )
             judgments_hash, stats_hash = write_judge_artifacts(
@@ -1013,6 +1023,7 @@ def run(
     except (
         BannedLanguageError,
         CertificateVerificationError,
+        JudgeInterrupted,
         OSError,
         ReplayAbortError,
         ReplayInterrupted,
