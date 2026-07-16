@@ -27,6 +27,25 @@ def render_report(
     *,
     output_path: Path,
     template_dir: Path = TEMPLATE_DIR,
+    review_mode: bool = False,
+) -> str:
+    rendered = render_report_html(cert, template_dir=template_dir, review_mode=review_mode)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(rendered)
+        if not rendered.endswith("\n"):
+            handle.write("\n")
+    digest = hashlib.sha256(output_path.read_bytes()).hexdigest()
+    with Path(f"{output_path}.sha256").open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(f"{digest}\n")
+    return digest
+
+
+def render_report_html(
+    cert: dict[str, Any],
+    *,
+    template_dir: Path = TEMPLATE_DIR,
+    review_mode: bool = False,
 ) -> str:
     template_path = template_dir / REPORT_TEMPLATE
     alpine_path = template_dir / "alpine.min.js"
@@ -63,17 +82,10 @@ def render_report(
         cert=cert,
         certificate_json=certificate_json,
         payload=cert["payload"],
+        review_mode=review_mode,
     )
     assert_no_banned_language(rendered)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("w", encoding="utf-8", newline="\n") as handle:
-        handle.write(rendered)
-        if not rendered.endswith("\n"):
-            handle.write("\n")
-    digest = hashlib.sha256(output_path.read_bytes()).hexdigest()
-    with Path(f"{output_path}.sha256").open("w", encoding="utf-8", newline="\n") as handle:
-        handle.write(f"{digest}\n")
-    return digest
+    return rendered
 
 
 def _html_json_value(value: Any) -> Any:
@@ -175,4 +187,5 @@ __all__ = [
     "BannedLanguageError",
     "assert_no_banned_words",
     "render_report",
+    "render_report_html",
 ]

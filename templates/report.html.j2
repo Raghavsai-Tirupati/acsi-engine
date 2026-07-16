@@ -19,6 +19,9 @@
       .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
       .panel { border: 1px solid #d1d5db; padding: 12px; }
       .small { font-size: 0.9rem; }
+      .stack { display: grid; gap: 10px; }
+      input, select, textarea { border: 1px solid #9ca3af; font: inherit; padding: 6px; }
+      button { border: 1px solid #111827; background: #fff; cursor: pointer; font: inherit; padding: 6px 10px; }
     </style>
     <script>{{ alpine_js|safe }}</script>
   </head>
@@ -36,7 +39,98 @@
         {% if payload.coverage.zero_event_bound_sentence %}
         <p>{{ payload.coverage.zero_event_bound_sentence }}</p>
         {% endif %}
+        {% if payload.coverage.human_override_footnote %}
+        <p class="small">{{ payload.coverage.human_override_footnote }}</p>
+        {% endif %}
       </section>
+
+      {% if review_mode %}
+      <section class="panel" x-data="reviewPanel()" x-init="load()">
+        <h2>Review Queue</h2>
+        <p class="small muted" x-text="status"></p>
+        <h3>Unresolved Queue</h3>
+        <template x-for="item in unresolved" :key="item.pair_id">
+          <div class="panel">
+            <strong x-text="item.pair_id"></strong>
+            <p class="small">Current outcome: <span x-text="item.outcome"></span></p>
+            <label>Override
+              <select x-model="item.to_outcome">
+                <option value="equivalent">equivalent</option>
+                <option value="candidate_better">candidate_better</option>
+                <option value="worse_minor">worse_minor</option>
+                <option value="worse_critical">worse_critical</option>
+                <option value="unresolved">unresolved</option>
+              </select>
+            </label>
+            <label>Note <input x-model="item.note"></label>
+            <button type="button" x-on:click="override(item)">Save Override</button>
+          </div>
+        </template>
+        <p x-show="unresolved.length === 0">No unresolved judge outcomes.</p>
+
+        <h3>Promote Assertion</h3>
+        <div class="stack">
+          <label>ID <input x-model="draft.id"></label>
+          <label>Type
+            <select x-model="draft.type">
+              <option value="contains">contains</option>
+              <option value="not_contains">not_contains</option>
+              <option value="regex">regex</option>
+            </select>
+          </label>
+          <label>Severity
+            <select x-model="draft.severity">
+              <option value="critical">critical</option>
+              <option value="major">major</option>
+              <option value="minor">minor</option>
+            </select>
+          </label>
+          <label>Params JSON <textarea rows="3" x-model="draft.params"></textarea></label>
+          <button type="button" x-on:click="promote()">Promote Assertion</button>
+        </div>
+      </section>
+      <script>
+        function reviewPanel() {
+          return {
+            draft: {id: "", type: "contains", severity: "major", params: "{}"},
+            status: "Loading review data",
+            unresolved: [],
+            async load() {
+              const response = await fetch("/api/run");
+              const payload = await response.json();
+              this.unresolved = payload.unresolved_queue.map((item) => ({
+                ...item,
+                note: "",
+                to_outcome: "equivalent",
+              }));
+              this.status = `${payload.overrides.length} override rows recorded`;
+            },
+            async override(item) {
+              const response = await fetch("/api/override", {
+                method: "POST",
+                headers: {"content-type": "application/json"},
+                body: JSON.stringify({
+                  note: item.note,
+                  pair_id: item.pair_id,
+                  to_outcome: item.to_outcome,
+                }),
+              });
+              this.status = await response.text();
+              await this.load();
+            },
+            async promote() {
+              const params = JSON.parse(this.draft.params || "{}");
+              const response = await fetch("/api/promote-assertion", {
+                method: "POST",
+                headers: {"content-type": "application/json"},
+                body: JSON.stringify({...this.draft, params}),
+              });
+              this.status = await response.text();
+            },
+          };
+        }
+      </script>
+      {% endif %}
 
       <h2>Criteria</h2>
       <table>
