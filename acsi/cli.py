@@ -20,6 +20,23 @@ from acsi.importers.supabase import (
     SupabaseImportError,
     import_supabase_records,
 )
+from acsi.judge.calibration import (
+    CalibrationSample,
+    ingest_calibration_csv,
+    write_calibration_sample,
+)
+from acsi.judge.clients import (
+    FakeJudge,
+    LiveJudge,
+    select_judge_panel,
+)
+from acsi.judge.runner import (
+    JudgeRunConfig,
+    build_candidate_pairs,
+    run_pairwise_judging,
+    select_for_judging,
+    write_judge_artifacts,
+)
 from acsi.replay.artifacts import RunClock, build_run_manifest, write_run_manifest
 from acsi.replay.clients import FakeClient, LiveClient
 from acsi.replay.runner import (
@@ -33,7 +50,7 @@ from acsi.replay.runner import (
 from acsi.replay.runner import (
     replay as replay_traces,
 )
-from acsi.replay.store import ReplayStore
+from acsi.replay.store import ReplayStore, StoredCall
 from acsi.schemas import ProviderModel, TraceRecord, export_json_schemas
 
 app = typer.Typer(
@@ -248,6 +265,73 @@ def _baseline_summary_table(payload: dict[str, object]) -> Table:
     ):
         table.add_row(key, str(payload.get(key)))
     return table
+
+
+def _load_noise_tau(run_dir: Path) -> float:
+    noise_path = run_dir / "baseline" / "noise_floor.json"
+    payload = json.loads(noise_path.read_text(encoding="utf-8"))
+    return float(payload["tau"])
+
+
+def _baseline_response_paths(run_dir: Path) -> list[Path]:
+    return [
+        run_dir / "baseline" / "responses.jsonl",
+        run_dir / "baseline_responses.jsonl",
+        run_dir / "responses.jsonl",
+    ]
+
+
+def _candidate_response_paths(run_dir: Path) -> list[Path]:
+    return [
+        run_dir / "candidate" / "responses.jsonl",
+        run_dir / "candidate_responses.jsonl",
+        run_dir / "responses.candidate.jsonl",
+        run_dir / "responses.jsonl",
+    ]
+
+
+def _first_existing(paths: list[Path]) -> Path:
+    for path in paths:
+        if path.exists():
+            return path
+    raise FileNotFoundError(f"None of these response artifacts exist: {paths}")
+
+
+def _load_response_calls(path: Path) -> list[StoredCall]:
+    calls: list[StoredCall] = []
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            payload = json.loads(line)
+            calls.append(
+                StoredCall(
+                    phase="replay",
+                    run_id="",
+                    trace_id=str(payload["trace_id"]),
+                    sample_index=int(payload["sample_index"]),
+                    model=str(payload.get("model", "")),
+                    params_hash="",
+                    prompt_hash="",
+                    status=str(payload.get("status", "done")),
+                    response=payload.get("response"),
+                    usage=payload.get("usage") or {},
+                    cost_usd=float(payload.get("cost_usd", 0.0)),
+                    served_model=payload.get("served_model"),
+                    error=None,
+                    retry_count=int(payload.get("retry_count", 0)),
+                )
+            )
+    return calls
+
+
+def _votes_from_judgments(
+    rows: list[dict[str, object]],
+) -> dict[str, dict[str, object]]:
+    votes: dict[str, dict[str, object]] = {}
+    for row in rows:
+        votes.setdefault(str(row["pair_id"]), {})[str(row["judge"])] = row["outcome"]
+    return votes
 
 
 @app.command()
@@ -496,11 +580,115 @@ def replay(
 
 @app.command()
 def judge(
+    run_id: Annotated[
+        str | None,
+        typer.Option("--run", help="Run id under --run-dir/runs to judge."),
+    ] = None,
+    manifest: ManifestOption = Path("acsi.yaml"),
+    traces: Annotated[
+        Path | None,
+        typer.Option("--traces", help="Normalized TraceRecord JSONL path."),
+    ] = None,
     run_dir: RunDirOption = Path(".acsi"),
+    export_calibration_sample: Annotated[
+        int | None,
+        typer.Option(
+            "--export-calibration-sample",
+            help="Write N selected judged pairs for human labels and exit.",
+        ),
+    ] = None,
+    calibration_csv: Annotated[
+        Path | None,
+        typer.Option("--calibration-csv", help="Human labels CSV to fold into judge_stats.json."),
+    ] = None,
+    fake: Annotated[
+        bool,
+        typer.Option("--fake/--live", help="Use FakeJudge clients instead of LiveJudge."),
+    ] = True,
     json_output: JsonOutputOption = False,
 ) -> None:
-    _ = run_dir
-    _emit_stub("judge", "M4", json_output)
+    if run_id is None:
+        _fail("Pass --run with the run id to judge.", json_output)
+    try:
+        manifest_model = load_workload_manifest(manifest)
+        traces_path = traces or run_dir / "traces" / f"{manifest_model.workload}.jsonl"
+        trace_records = import_jsonl_paths([traces_path]).records
+        active_run_dir = run_dir / "runs" / run_id
+        tau = _load_noise_tau(active_run_dir)
+        baseline_calls = _load_response_calls(
+            _first_existing(_baseline_response_paths(active_run_dir))
+        )
+        candidate_calls = _load_response_calls(
+            _first_existing(_candidate_response_paths(active_run_dir))
+        )
+        pairs = build_candidate_pairs(
+            trace_records,
+            baseline_calls,
+            candidate_calls,
+            tau=tau,
+        )
+        selected = select_for_judging(pairs, tau)
+        if export_calibration_sample is not None:
+            output = active_run_dir / "calibration_sample.csv"
+            write_calibration_sample(
+                output,
+                [
+                    CalibrationSample(
+                        pair.pair_id,
+                        pair.prompt,
+                        pair.baseline.text or "",
+                        pair.candidate.text or "",
+                    )
+                    for pair in selected
+                ],
+                export_calibration_sample,
+            )
+            payload = {"status": "ok", "path": str(output), "rows": export_calibration_sample}
+            if json_output:
+                console.print_json(data=payload)
+            else:
+                console.print(f"Wrote {output}")
+            return
+
+        panel = select_judge_panel(manifest_model)
+        clients = {
+            judge_spec.model: FakeJudge(model=judge_spec.model)
+            if fake
+            else LiveJudge(judge_spec.model)
+            for judge_spec in panel
+        }
+        result = run_pairwise_judging(
+            selected,
+            clients,
+            store=ReplayStore(active_run_dir / "replay.sqlite"),
+            config=JudgeRunConfig(run_id=run_id, seed=manifest_model.sampling.seed),
+        )
+        calibration = None
+        if calibration_csv is not None:
+            calibration = ingest_calibration_csv(
+                calibration_csv,
+                _votes_from_judgments(result.judgments),
+            )
+        judgments_hash, stats_hash = write_judge_artifacts(
+            active_run_dir,
+            result,
+            calibration=calibration,
+        )
+    except (OSError, ValueError) as exc:
+        _fail(str(exc), json_output)
+
+    payload = {
+        "status": "ok",
+        "run_id": run_id,
+        "run_dir": str(active_run_dir),
+        "selected_pairs": len(selected),
+        "judgments_sha256": judgments_hash,
+        "judge_stats_sha256": stats_hash,
+    }
+    if json_output:
+        console.print_json(data=payload)
+    else:
+        console.print_json(data=payload)
 
 
 @app.command()
