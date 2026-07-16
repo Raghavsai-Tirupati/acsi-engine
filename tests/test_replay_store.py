@@ -59,3 +59,36 @@ def test_replay_store_records_trace_level_errors(tmp_path: Path) -> None:
 
     assert store.status_counts("run-1") == {"error": 1}
     assert store.done_calls("run-1") == []
+
+
+def test_replay_store_isolates_phases(tmp_path: Path) -> None:
+    db_path = tmp_path / "replay.sqlite"
+    store = ReplayStore(db_path)
+    store.initialize()
+
+    response = CompletionResponse(
+        text="ok",
+        tool_calls=None,
+        finish_reason="stop",
+        usage={"input_tokens": 1, "output_tokens": 1},
+        latency_ms=5,
+        served_model="judge-model",
+    )
+    for phase, cost in (("replay", 0.01), ("judge", 0.02)):
+        store.write_done(
+            run_id="run-1",
+            trace_id="same-id",
+            sample_index=0,
+            model="model",
+            params_hash="params",
+            prompt_hash="prompt",
+            response=response,
+            cost_usd=cost,
+            retry_count=0,
+            phase=phase,
+        )
+
+    assert store.get_done("run-1", "same-id", 0).phase == "replay"
+    assert store.get_done("run-1", "same-id", 0, phase="judge").phase == "judge"
+    assert store.total_cost("run-1") == 0.01
+    assert store.total_cost("run-1", phase="judge") == 0.02
