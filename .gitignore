@@ -9,3 +9,5 @@ build/
 *.egg-info/
 .env
 .DS_Store
+benchmarks/oss-issues/corpus.jsonl
+benchmarks/oss-issues/traces.jsonl

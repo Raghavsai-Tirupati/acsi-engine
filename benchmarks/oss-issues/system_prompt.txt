@@ -1,0 +1,4 @@
+Summarize a GitHub issue into exactly this JSON object:
+{"summary": string, "category": "bug" | "feature_request" | "question" | "docs" | "performance" | "other", "severity": "low" | "medium" | "high" | "critical", "affected_area": string, "action_items": string[], "needs_more_info": boolean}
+
+Return raw JSON only. Do not use markdown fences or prose.
