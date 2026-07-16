@@ -161,10 +161,11 @@ class ParamTransformation(StrictModel):
     provider: str
     model: str
     path: str
-    action: Literal["strip", "translate", "clamp"]
+    action: Literal["strip", "rename", "clamp"]
     original: Any | None = None
     transformed: Any | None = None
     reason: str
+    count: int = Field(default=1, ge=1)
 
 
 class CostLedgerEntry(StrictModel):
