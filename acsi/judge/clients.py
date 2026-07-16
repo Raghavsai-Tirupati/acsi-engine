@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -15,7 +14,8 @@ from acsi.replay.clients import (
     PermanentError,
     plausible_token_count,
 )
-from acsi.schemas import WorkloadManifest
+from acsi.replay.routing import provider_route
+from acsi.schemas import JudgeModelConfig, WorkloadManifest
 
 Oracle = Callable[[str], CandidateOutcome]
 ClassifierOracle = Callable[[str], bool]
@@ -30,6 +30,9 @@ class JudgeConfigurationError(ValueError):
 class JudgeSpec:
     model: str
     family: str
+    provider: str = ""
+    litellm_model: str = ""
+    api_base: str | None = None
 
 
 class FakeJudge:
@@ -116,8 +119,13 @@ class FakeJudge:
 
 
 class LiveJudge:
-    def __init__(self, model: str) -> None:
-        self.model = model
+    def __init__(self, litellm_model: str, *, api_base: str | None = None) -> None:
+        self.litellm_model = litellm_model
+        self.api_base = api_base
+
+    @classmethod
+    def from_spec(cls, spec: JudgeSpec) -> LiveJudge:
+        return cls(spec.litellm_model, api_base=spec.api_base)
 
     def complete(self, request: CompletionRequest) -> CompletionResponse:
         try:
@@ -129,11 +137,11 @@ class LiveJudge:
             ) from exc
 
         started = time.perf_counter()
-        kwargs = {}
-        if judge_family(self.model) == "local":
-            kwargs["api_base"] = os.environ.get("ACSI_LOCAL_JUDGE_URL", "http://localhost:11434/v1")
+        kwargs: dict[str, str] = {}
+        if self.api_base:
+            kwargs["api_base"] = self.api_base
         raw_response = litellm.completion(
-            model=self.model,
+            model=self.litellm_model,
             messages=[{"role": "user", "content": request.prompt_text}],
             **kwargs,
         )
@@ -150,7 +158,9 @@ class LiveJudge:
                 "output_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
             },
             latency_ms=latency_ms,
-            served_model=str(getattr(raw_response, "model", self.model) or self.model),
+            served_model=str(
+                getattr(raw_response, "model", self.litellm_model) or self.litellm_model
+            ),
         )
 
 
@@ -163,9 +173,9 @@ def select_judge_panel(manifest: WorkloadManifest) -> list[JudgeSpec]:
     excluded = {manifest.baseline.provider, manifest.candidate.provider}
     allowed = set(manifest.judging.families_allowed) - excluded
     panel = [
-        JudgeSpec(model=judge.model, family=judge_family(judge.model))
+        _build_judge_spec(judge)
         for judge in configured
-        if judge_family(judge.model) in allowed
+        if judge_entry_provider(judge) in allowed
     ]
     if len(panel) < manifest.judging.min_judges:
         excluded_text = ", ".join(
@@ -178,6 +188,24 @@ def select_judge_panel(manifest: WorkloadManifest) -> list[JudgeSpec]:
             f"Need {manifest.judging.min_judges}; configured eligible {len(panel)}."
         )
     return panel
+
+
+def judge_entry_provider(entry: JudgeModelConfig) -> str:
+    # Prefer the explicit pinned {provider, model} field; fall back to parsing a
+    # legacy "{provider}/{model}" string.
+    return entry.provider or judge_family(entry.model)
+
+
+def _build_judge_spec(entry: JudgeModelConfig) -> JudgeSpec:
+    provider = judge_entry_provider(entry)
+    route = provider_route(provider, entry.model)
+    return JudgeSpec(
+        model=entry.model,
+        family=provider,
+        provider=provider,
+        litellm_model=route.litellm_model,
+        api_base=route.api_base,
+    )
 
 
 def judge_family(model: str) -> str:

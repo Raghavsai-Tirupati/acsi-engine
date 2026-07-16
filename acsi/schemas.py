@@ -121,6 +121,10 @@ class AssertionConfig(BaseModel):
 
 class JudgeModelConfig(StrictModel):
     model: str
+    # SPEC-NOTE: the pinned judge-entry shape is {provider, model} with a bare
+    # model id. `provider` is optional so legacy "{provider}/{model}" strings
+    # (family derived from the prefix) keep validating unchanged.
+    provider: str | None = None
 
 
 class JudgingConfig(StrictModel):

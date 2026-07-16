@@ -81,7 +81,13 @@ judging:
     - openai
     - google
     - local
-  judges: []
+  # SPEC-NOTE: model IDs verified against July 2026 pricing registries; the exact
+  # strings are confirmed at runtime by `acsi preflight`, which is the authority.
+  judges:
+    - provider: openai
+      model: gpt-5.4-mini
+    - provider: google
+      model: gemini-3.5-flash
 thresholds:
   epsilon_pp: 2.0
   max_critical: 0
