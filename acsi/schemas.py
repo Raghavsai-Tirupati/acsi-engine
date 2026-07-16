@@ -119,9 +119,14 @@ class AssertionConfig(BaseModel):
     max: float | None = None
 
 
+class JudgeModelConfig(StrictModel):
+    model: str
+
+
 class JudgingConfig(StrictModel):
     families_allowed: list[str]
     min_judges: int = Field(ge=1)
+    judges: list[JudgeModelConfig] | None = None
 
 
 class ThresholdConfig(StrictModel):
