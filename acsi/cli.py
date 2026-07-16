@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import io
 import json
+import shutil
 from pathlib import Path
 from typing import Annotated
 from uuid import uuid4
@@ -1044,6 +1046,163 @@ def run(
         console.print_json(data=payload)
     else:
         console.print_json(data=payload)
+
+
+@app.command()
+def demo(
+    run_dir: RunDirOption = Path(".acsi"),
+    json_output: JsonOutputOption = False,
+) -> None:
+    """Run the shipped seeded FakeClient demo with no network or provider spend."""
+    try:
+        traces_path = _demo_fixture_path()
+        manifest_path = _write_demo_manifest(run_dir / "demo" / "acsi.yaml")
+        runs = [
+            _run_demo_case(
+                manifest=manifest_path,
+                traces=traces_path,
+                run_dir=run_dir,
+                run_id="demo-pass",
+                expected_verdict="PASS",
+                inject_broken_json_rate=0.0,
+            ),
+            _run_demo_case(
+                manifest=manifest_path,
+                traces=traces_path,
+                run_dir=run_dir,
+                run_id="demo-block",
+                expected_verdict="BLOCK",
+                inject_broken_json_rate=0.08,
+            ),
+        ]
+    except (OSError, RuntimeError, ValueError) as exc:
+        _fail(str(exc), json_output)
+
+    payload = {"status": "ok", "runs": runs}
+    if json_output:
+        console.print_json(data=payload)
+        return
+
+    console.print("ACSI demo complete.")
+    for item in runs:
+        console.print(f"{item['run_id']} verdict: {item['verdict']}")
+        console.print(f"{item['run_id']} report.html: {item['report_path']}")
+
+
+def _demo_fixture_path() -> Path:
+    fixture = Path("tests") / "fixtures" / "synthetic_traces.jsonl"
+    if fixture.exists():
+        return fixture
+    raise FileNotFoundError(
+        "Demo fixture not found at tests/fixtures/synthetic_traces.jsonl; "
+        "run `acsi demo` from the repository root."
+    )
+
+
+def _write_demo_manifest(path: Path) -> Path:
+    payload = {
+        "assertions": [{"id": "json-valid", "severity": "critical", "type": "json_valid"}],
+        "baseline": {"provider": "anthropic", "model": "claude-haiku-4-5-20251001"},
+        "budget": {"max_usd": 1.0, "use_batch_api": False},
+        "candidate": {"provider": "anthropic", "model": "claude-sonnet-5"},
+        "judging": {
+            "families_allowed": ["openai"],
+            "judges": [{"model": "openai/fake-judge"}],
+            "min_judges": 1,
+        },
+        "privacy": {"egress": "hosted_api", "scrub": True},
+        "sampling": {"k_baseline": 2, "n": 300, "seed": 42, "stratify_by": ["template_id"]},
+        "thresholds": {"confidence": 0.95, "epsilon_pp": 2.0, "max_critical": 0},
+        "workload": "volunteer-application-summary",
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(json.dumps(payload, sort_keys=True, indent=2))
+        handle.write("\n")
+    return path
+
+
+def _run_demo_case(
+    *,
+    manifest: Path,
+    traces: Path,
+    run_dir: Path,
+    run_id: str,
+    expected_verdict: str,
+    inject_broken_json_rate: float,
+) -> dict[str, str]:
+    active_run_dir = run_dir / "runs" / run_id
+    shutil.rmtree(active_run_dir, ignore_errors=True)
+    _run_quietly(
+        manifest=manifest,
+        traces=traces,
+        run_id=run_id,
+        run_dir=run_dir,
+        fake_noise=0.05,
+        inject_broken_json_rate=inject_broken_json_rate,
+    )
+    cert_path = active_run_dir / "cert.json"
+    cert = json.loads(cert_path.read_text(encoding="utf-8"))
+    verdict = str(cert["payload"]["verdict"])
+    if verdict != expected_verdict:
+        raise RuntimeError(
+            f"Demo run {run_id} produced verdict {verdict}; expected {expected_verdict}."
+        )
+    return {
+        "cert_path": str(cert_path),
+        "report_path": str(active_run_dir / "report.html"),
+        "run_dir": str(active_run_dir),
+        "run_id": run_id,
+        "scenario": "clean" if expected_verdict == "PASS" else "8% STRICT_JSON_MODE injection",
+        "verdict": verdict,
+    }
+
+
+def _run_quietly(
+    *,
+    manifest: Path,
+    traces: Path,
+    run_id: str,
+    run_dir: Path,
+    fake_noise: float,
+    inject_broken_json_rate: float,
+) -> None:
+    global console
+
+    previous_console = console
+    output = io.StringIO()
+    console = Console(file=output, force_terminal=False, color_system=None)
+    try:
+        try:
+            run(
+                manifest=manifest,
+                traces=traces,
+                run_id=run_id,
+                run_dir=run_dir,
+                fake_noise=fake_noise,
+                inject_broken_json_rate=inject_broken_json_rate,
+                inject_broken_json_token=None,
+                interrupt_after_judge_dispatches=None,
+                degraded=False,
+                yes=True,
+                json_output=True,
+            )
+        except typer.Exit as exc:
+            if exc.exit_code not in (None, 0):
+                raise RuntimeError(_quiet_run_error(output.getvalue(), run_id)) from exc
+    finally:
+        console = previous_console
+
+
+def _quiet_run_error(output: str, run_id: str) -> str:
+    try:
+        payload = json.loads(output)
+    except json.JSONDecodeError:
+        return f"Demo run {run_id} failed."
+    message = payload.get("message")
+    if isinstance(message, str):
+        return f"Demo run {run_id} failed: {message}"
+    return f"Demo run {run_id} failed."
 
 
 @app.command()

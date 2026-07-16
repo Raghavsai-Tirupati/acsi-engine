@@ -192,7 +192,7 @@ class CostLedgerEntry(StrictModel):
 
 
 class RunManifest(StrictModel):
-    run_id: UUID
+    run_id: str
     manifest_hash: ContentHash
     sampled_trace_hash: ContentHash
     engine_version: str
