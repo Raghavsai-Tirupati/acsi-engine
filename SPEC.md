@@ -19,7 +19,7 @@ First real customer (dogfood): a healthcare-workforce app whose production workl
 ## 2. Environment and stack
 
 - Python **3.12+**, managed with **uv**. Package name `acsi`, CLI entry point `acsi`.
-- Core dependencies (justify any addition beyond these in the commit message): `typer` (CLI), `pydantic` v2 (schemas), `litellm` (all provider calls), `httpx`, `rich` (progress/output), `numpy`, `scipy`, `scikit-learn` + `hdbscan` (clustering), `sentence-transformers` (lazy-imported; default model `BAAI/bge-small-en-v1.5`), `jinja2` (report), `cryptography` (ed25519 signing), `pytest`, `ruff`.
+- Core dependencies (justify any addition beyond these in the commit message): `typer` (CLI), `pydantic` v2 (schemas), `litellm` (all provider calls), `httpx`, `rich` (progress/output), `numpy`, `scipy`, `scikit-learn` (clustering), `sentence-transformers` (lazy-imported; default model `BAAI/bge-small-en-v1.5`), `jinja2` (report), `cryptography` (ed25519 signing), `pytest`, `ruff`.
 - Optional extras: `acsi[scrub]` → `presidio-analyzer` (heavy spaCy deps). A built-in regex scrubber (emails, phones, SSN-like, simple name patterns) must work without the extra.
 - Persistence: **SQLite** (stdlib `sqlite3`) for run state, checkpoints, and response cache. JSONL for trace artifacts. No server databases.
 - Secrets: environment variables only (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`). All optional in development — every pipeline stage must run end-to-end with the FakeClient (§8) and shipped fixtures, spending zero dollars.
