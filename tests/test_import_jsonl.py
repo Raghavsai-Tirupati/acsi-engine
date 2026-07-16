@@ -57,7 +57,9 @@ def test_jsonl_import_default_output_path(tmp_path: Path, monkeypatch) -> None:
 
     assert result.exit_code == 0, result.output
     payload = _json_payload(result.output)
-    assert payload["output"] == ".acsi/traces/volunteer-application-summary.jsonl"
+    assert Path(payload["output"]) == Path(".acsi") / "traces" / (
+        "volunteer-application-summary.jsonl"
+    )
     assert Path(payload["output"]).exists()
 
 
