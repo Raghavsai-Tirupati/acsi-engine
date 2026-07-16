@@ -184,6 +184,7 @@ class RunManifest(StrictModel):
     seeds: dict[str, int]
     endpoints: dict[str, str]
     served_models: list[str]
+    degraded: bool = False
     param_transformations: list[ParamTransformation] = Field(default_factory=list)
     wall_clock_seconds: float = Field(ge=0)
     cost_ledger: list[CostLedgerEntry] = Field(default_factory=list)

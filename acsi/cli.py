@@ -11,6 +11,7 @@ from rich.console import Console
 from rich.table import Table
 
 from acsi import __version__
+from acsi.baseline import run_baseline as run_baseline_stage
 from acsi.config import load_workload_manifest
 from acsi.importers.common import choose_output_path, inventory_table, write_import_artifacts
 from acsi.importers.jsonl import import_jsonl_paths
@@ -197,6 +198,10 @@ def _resume_command(manifest: Path, traces: Path, run_id: str) -> str:
     return f"acsi replay --manifest {manifest} --traces {traces} --run-id {run_id} --yes"
 
 
+def _baseline_resume_command(manifest: Path, traces: Path, run_id: str) -> str:
+    return f"acsi baseline --manifest {manifest} --traces {traces} --run-id {run_id} --yes"
+
+
 def _replay_summary_table(payload: dict[str, object]) -> Table:
     table = Table(title="ACSI Replay Summary")
     table.add_column("Metric")
@@ -219,6 +224,32 @@ def _replay_summary_table(payload: dict[str, object]) -> Table:
     return table
 
 
+def _baseline_summary_table(payload: dict[str, object]) -> Table:
+    table = Table(title="ACSI Baseline Summary")
+    table.add_column("Metric")
+    table.add_column("Value")
+    for key in (
+        "status",
+        "run_id",
+        "run_dir",
+        "completed",
+        "errors",
+        "cache_hits",
+        "dispatched",
+        "cost_usd",
+        "degraded",
+        "threshold_source",
+        "textual_mismatch_rate",
+        "beyond_noise_rate",
+        "beyond_noise_to_textual_mismatch_rate",
+        "noise_floor_sha256",
+        "responses_sha256",
+        "run_sha256",
+    ):
+        table.add_row(key, str(payload.get(key)))
+    return table
+
+
 @app.command()
 def run(
     manifest: ManifestOption = Path("acsi.yaml"),
@@ -234,6 +265,27 @@ def run(
 
 @app.command()
 def baseline(
+    manifest: ManifestOption = Path("acsi.yaml"),
+    traces: Annotated[
+        Path | None,
+        typer.Option("--traces", help="Normalized TraceRecord JSONL path."),
+    ] = None,
+    run_id: Annotated[
+        str | None,
+        typer.Option("--run-id", help="Resume or create this run id."),
+    ] = None,
+    seed: Annotated[int, typer.Option("--seed", help="Baseline replay seed.")] = 42,
+    concurrency: Annotated[int, typer.Option("--concurrency", help="Replay concurrency.")] = 4,
+    max_cost: Annotated[
+        float | None,
+        typer.Option("--max-cost", help="Maximum baseline replay spend in USD."),
+    ] = None,
+    yes: Annotated[bool, typer.Option("--yes", help="Approve baseline execution.")] = False,
+    live: Annotated[
+        bool,
+        typer.Option("--live", help="Use LiveClient instead of FakeClient."),
+    ] = False,
+    fake_noise: Annotated[float, typer.Option("--fake-noise", help="FakeClient noise rate.")] = 0.0,
     run_dir: RunDirOption = Path(".acsi"),
     degraded: Annotated[
         bool,
@@ -244,8 +296,90 @@ def baseline(
     ] = False,
     json_output: JsonOutputOption = False,
 ) -> None:
-    _ = (run_dir, degraded)
-    _emit_stub("baseline", "M3", json_output)
+    try:
+        manifest_model = load_workload_manifest(manifest)
+        baseline_model = manifest_model.baseline
+        traces_path = traces or run_dir / "traces" / f"{manifest_model.workload}.jsonl"
+        trace_records = import_jsonl_paths([traces_path]).records
+        if not trace_records:
+            _fail(f"No valid traces found in {traces_path}.", json_output)
+
+        active_run_id = run_id or str(uuid4())
+        active_run_dir = run_dir / "runs" / active_run_id
+        max_cost_usd = max_cost if max_cost is not None else manifest_model.budget.max_usd
+        if not degraded:
+            estimate = _estimate_replay_cost(
+                trace_records,
+                baseline_model,
+                manifest_model.sampling.k_baseline,
+                fake=not live,
+            )
+            if not yes:
+                if json_output:
+                    _fail("Pass --yes to approve baseline execution.", json_output)
+                _confirm_replay(trace_records, baseline_model, estimate)
+
+        client = LiveClient() if live else FakeClient(seed=seed, noise=fake_noise)
+        result = asyncio.run(
+            run_baseline_stage(
+                trace_records,
+                baseline_model,
+                manifest_model.sampling.k_baseline,
+                client=client,
+                store=ReplayStore(active_run_dir / "replay.sqlite"),
+                config=ReplayConfig(
+                    run_id=active_run_id,
+                    seed=seed,
+                    concurrency=concurrency,
+                    max_cost_usd=max_cost_usd,
+                    resume_command=_baseline_resume_command(
+                        manifest,
+                        traces_path,
+                        active_run_id,
+                    ),
+                ),
+                run_dir=active_run_dir,
+                manifest_path=manifest,
+                traces_path=traces_path,
+                endpoint="degraded" if degraded else ("live" if live else "fake"),
+                degraded=degraded,
+            )
+        )
+    except ReplayAbortError as exc:
+        _fail(str(exc), json_output)
+    except ReplayInterrupted as exc:
+        _fail(str(exc), json_output)
+    except (OSError, ValueError) as exc:
+        _fail(str(exc), json_output)
+
+    replay_result = result.replay_result
+    payload = {
+        "status": "ok" if not replay_result.halted_reason else "halted",
+        "run_id": active_run_id,
+        "run_dir": str(active_run_dir),
+        "completed": replay_result.completed,
+        "errors": replay_result.errors,
+        "cache_hits": replay_result.cache_hits,
+        "dispatched": replay_result.dispatched,
+        "retry_count": replay_result.retry_count,
+        "cost_usd": replay_result.cost_usd,
+        "halted_reason": replay_result.halted_reason,
+        "degraded": degraded,
+        "threshold_source": result.noise_floor.get("threshold_source"),
+        "textual_mismatch_rate": result.noise_floor.get("textual_mismatch_rate"),
+        "beyond_noise_rate": result.noise_floor.get("beyond_noise_rate"),
+        "beyond_noise_to_textual_mismatch_rate": result.noise_floor.get(
+            "beyond_noise_to_textual_mismatch_rate"
+        ),
+        "noise_floor_path": str(active_run_dir / "baseline" / "noise_floor.json"),
+        "noise_floor_sha256": result.noise_floor_sha256,
+        "responses_sha256": result.responses_sha256,
+        "run_sha256": result.run_sha256,
+    }
+    if json_output:
+        console.print_json(data=payload)
+    else:
+        console.print(_baseline_summary_table(payload))
 
 
 @app.command()

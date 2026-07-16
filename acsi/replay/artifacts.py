@@ -36,6 +36,7 @@ def build_run_manifest(
     store: ReplayStore,
     result: ReplayResult,
     wall_clock_seconds: float,
+    degraded: bool = False,
 ) -> RunManifest:
     calls = store.done_calls(run_id)
     tokens_in = sum(call.usage.get("input_tokens", 0) for call in calls)
@@ -49,6 +50,7 @@ def build_run_manifest(
         seeds={"replay": seed},
         endpoints={provider: endpoint},
         served_models=store.served_models(run_id),
+        degraded=degraded,
         param_transformations=_param_transformations(result.param_transforms),
         wall_clock_seconds=wall_clock_seconds,
         cost_ledger=[
