@@ -53,8 +53,11 @@ def test_spec_a_clean_seeded_run_passes_and_verifies(tmp_path: Path) -> None:
         "rate": 0.0,
         "upper": 0.0,
     }
-    assert cert_payload["noise_floor"]["upper"] == 0.0
-    assert cert_payload["criteria"][1]["threshold"] == 0.02
+    assert cert_payload["noise_floor"]["rate"] > 0.0
+    assert cert_payload["noise_floor"]["upper"] == 0.016666666667
+    assert cert_payload["criteria"][1]["actual_ci_upper"] <= cert_payload["criteria"][1][
+        "threshold"
+    ]
     assert "≤ 1.0%" in cert_payload["coverage"]["zero_event_bound_sentence"]
     verify = CliRunner().invoke(app, ["verify", str(run_dir / "cert.json"), "--json"])
     assert verify.exit_code == 0, verify.output

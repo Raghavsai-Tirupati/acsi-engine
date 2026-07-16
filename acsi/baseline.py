@@ -99,7 +99,7 @@ async def run_baseline(
         )
     else:
         noise_floor = calculate_noise_floor(
-            store.done_calls(config.run_id),
+            store.done_calls(config.run_id, phase=config.phase),
             run_id=config.run_id,
             k_baseline=k_baseline,
             seed=config.seed,
