@@ -268,6 +268,7 @@ def cluster_regressions(
     labels = HDBSCAN(
         min_cluster_size=active_min,
         metric="euclidean",
+        allow_single_cluster=True,
         copy=True,
     ).fit_predict(np.asarray(embeddings, dtype=np.float64))
 
