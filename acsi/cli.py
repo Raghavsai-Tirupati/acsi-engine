@@ -8,6 +8,8 @@ import typer
 from rich.console import Console
 
 from acsi import __version__
+from acsi.importers.common import choose_output_path, inventory_table, write_import_artifacts
+from acsi.importers.jsonl import import_jsonl_paths
 from acsi.schemas import export_json_schemas
 
 app = typer.Typer(
@@ -17,6 +19,7 @@ app = typer.Typer(
 schema_app = typer.Typer(help="Export frozen ACSI JSON Schemas.")
 app.add_typer(schema_app, name="schema")
 console = Console()
+err_console = Console(stderr=True)
 
 JsonOutputOption = Annotated[
     bool,
@@ -65,14 +68,53 @@ def init(
 @app.command("import")
 def import_(
     source: Annotated[str, typer.Argument(help="Importer name: jsonl or supabase.")],
-    input_path: Annotated[
+    input_paths: Annotated[
+        list[Path] | None,
+        typer.Argument(help="Input JSONL files for file-based importers."),
+    ] = None,
+    out: Annotated[
         Path | None,
-        typer.Argument(help="Input file or directory for file-based importers."),
+        typer.Option("--out", help="Normalized TraceRecord JSONL output path."),
+    ] = None,
+    workload: Annotated[
+        str | None,
+        typer.Option("--workload", help="Workload filter for importers that support it."),
+    ] = None,
+    since: Annotated[
+        str | None,
+        typer.Option("--since", help="Optional ISO timestamp lower bound."),
     ] = None,
     json_output: JsonOutputOption = False,
 ) -> None:
-    _ = (source, input_path)
-    _emit_stub("import", "M1", json_output)
+    try:
+        if source == "jsonl":
+            if not input_paths:
+                _fail("Pass at least one JSONL input path.", json_output)
+            result = import_jsonl_paths(input_paths, warn=err_console.print)
+        elif source == "supabase":
+            _fail("Supabase import is not implemented in this module yet.", json_output)
+        else:
+            _fail("Unsupported importer. Use `jsonl` or `supabase`.", json_output)
+
+        output_path = choose_output_path(result.records, out)
+        digest = write_import_artifacts(result, output_path)
+    except (OSError, ValueError) as exc:
+        _fail(str(exc), json_output)
+
+    _ = (workload, since)
+    payload = result.summary.to_payload(output_path=output_path, sha256=digest)
+    if json_output:
+        console.print_json(data=payload)
+    else:
+        console.print(inventory_table(payload))
+
+
+def _fail(message: str, json_output: bool) -> None:
+    if json_output:
+        console.print_json(data={"status": "error", "message": message})
+    else:
+        console.print(f"Error: {message}", style="red")
+    raise typer.Exit(1)
 
 
 @app.command()
