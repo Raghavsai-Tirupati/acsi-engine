@@ -7,9 +7,47 @@ import pytest
 from typer.testing import CliRunner
 
 from acsi.cli import app
-from acsi.preflight import run_preflight
-from acsi.replay.clients import FakeClient
+from acsi.preflight import PREFLIGHT_MAX_TOKENS, run_preflight
+from acsi.replay.clients import (
+    CompletionRequest,
+    CompletionResponse,
+    FakeClient,
+    PermanentError,
+    TransientError,
+)
 from acsi.schemas import WorkloadManifest
+
+NO_SLEEP = lambda _seconds: None  # noqa: E731 - test backoff stub
+
+
+class _ScriptedClient:
+    """CompletionClient stub with per-model, per-attempt scripted behavior.
+
+    behaviors[model] is a list of exceptions to raise on successive attempts;
+    a None entry (or running past the list) yields a successful completion.
+    Models absent from the map always succeed.
+    """
+
+    def __init__(self, behaviors: dict[str, list[BaseException | None]]) -> None:
+        self.behaviors = behaviors
+        self.attempts: dict[str, int] = {}
+        self.last_params: dict[str, object] = {}
+
+    def complete(self, request: CompletionRequest) -> CompletionResponse:
+        self.last_params = dict(request.params)
+        self.attempts[request.model] = self.attempts.get(request.model, 0) + 1
+        plan = self.behaviors.get(request.model, [])
+        index = self.attempts[request.model] - 1
+        if index < len(plan) and plan[index] is not None:
+            raise plan[index]  # type: ignore[misc]
+        return CompletionResponse(
+            text="OK",
+            tool_calls=None,
+            finish_reason="stop",
+            usage={"input_tokens": 4, "output_tokens": 2},
+            latency_ms=11,
+            served_model=request.model,
+        )
 
 ALL_KEYS = {
     "ANTHROPIC_API_KEY": "test-anthropic",
@@ -87,9 +125,71 @@ def test_json_payload_shape() -> None:
         "requested_model",
         "served_model",
         "latency_ms",
+        "attempts",
         "ok",
         "error",
     }
+    assert first["attempts"] == 1
+
+
+def test_probe_uses_reasoning_friendly_token_cap() -> None:
+    client = _ScriptedClient({})
+
+    run_preflight(_manifest(), client=client, env=ALL_KEYS, fake=True, sleep=NO_SLEEP)
+
+    assert PREFLIGHT_MAX_TOKENS == 256
+    assert client.last_params["max_tokens"] == 256
+
+
+def test_transient_503_is_retried_then_succeeds() -> None:
+    client = _ScriptedClient(
+        {"gemini-3.5-flash": [TransientError("503 UNAVAILABLE"), TransientError("503 UNAVAILABLE")]}
+    )
+
+    report = run_preflight(_manifest(), client=client, env=ALL_KEYS, fake=True, sleep=NO_SLEEP)
+
+    assert report.ok is True
+    judge = next(c for c in report.checks if c.requested_model == "gemini-3.5-flash")
+    assert judge.ok is True
+    assert judge.attempts == 3
+
+
+def test_persistent_503_fails_after_three_attempts() -> None:
+    client = _ScriptedClient(
+        {"gemini-3.5-flash": [TransientError("503 UNAVAILABLE")] * 3}
+    )
+
+    report = run_preflight(_manifest(), client=client, env=ALL_KEYS, fake=True, sleep=NO_SLEEP)
+
+    assert report.ok is False
+    judge = next(c for c in report.checks if c.requested_model == "gemini-3.5-flash")
+    assert judge.ok is False
+    assert judge.attempts == 3
+    assert "3 attempts" in judge.error
+    assert "5xx" in judge.error
+
+
+def test_reasoning_style_400_surfaces_actionable_one_liner() -> None:
+    client = _ScriptedClient(
+        {
+            "gpt-5.4-mini": [
+                PermanentError(
+                    "Could not finish the message because max_tokens or model "
+                    "output limit was reached.",
+                    status_code=400,
+                )
+            ]
+        }
+    )
+
+    report = run_preflight(_manifest(), client=client, env=ALL_KEYS, fake=True, sleep=NO_SLEEP)
+
+    assert report.ok is False
+    judge = next(c for c in report.checks if c.requested_model == "gpt-5.4-mini")
+    assert judge.ok is False
+    assert judge.attempts == 1  # non-transient 400 fails fast, no retries
+    assert "HTTP 400" in judge.error
+    assert "output-token limit" in judge.error
 
 
 def test_cli_live_path_never_calls_network_without_keys(

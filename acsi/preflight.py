@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
+import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -11,14 +12,26 @@ from acsi.replay.clients import (
     CompletionRequest,
     RateLimitError,
     ReplayClientError,
+    TransientError,
+    plausible_token_count,
 )
 from acsi.replay.params import transform_params
 from acsi.replay.routing import required_api_key_env
 from acsi.replay.runner import estimate_call_cost_usd
 from acsi.schemas import WorkloadManifest
 
-PREFLIGHT_PROMPT = "ping"
-PREFLIGHT_MAX_TOKENS = 1
+PREFLIGHT_PROMPT = "Reply with OK."
+# SPEC-NOTE: a max_tokens=1 probe is incompatible with reasoning models (GPT-5
+# minis, etc.) — they spend reasoning tokens before any visible output, so a
+# 1-token cap can never yield a token and litellm raises. The cap accommodates
+# reasoning tokens; the trivial prompt keeps actual output tiny. The printed cost
+# estimate uses PREFLIGHT_EXPECTED_OUTPUT_TOKENS (~8), never the cap, so the
+# "< $0.01" claim stays honest.
+PREFLIGHT_MAX_TOKENS = 256
+PREFLIGHT_EXPECTED_OUTPUT_TOKENS = 8
+# Retry transient failures (HTTP 429/5xx) before marking a check failed.
+PREFLIGHT_MAX_ATTEMPTS = 3
+PREFLIGHT_BACKOFF_BASE_SECONDS = 0.5
 
 
 @dataclass(frozen=True)
@@ -28,6 +41,7 @@ class ModelCheck:
     requested_model: str
     served_model: str | None
     latency_ms: int | None
+    attempts: int
     ok: bool
     error: str | None
 
@@ -38,6 +52,7 @@ class ModelCheck:
             "requested_model": self.requested_model,
             "served_model": self.served_model,
             "latency_ms": self.latency_ms,
+            "attempts": self.attempts,
             "ok": self.ok,
             "error": self.error,
         }
@@ -79,6 +94,7 @@ def run_preflight(
     client: CompletionClient,
     env: Mapping[str, str] | None = None,
     fake: bool = False,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> PreflightReport:
     """Verify credentials and, when present, make one minimal completion per model.
 
@@ -114,9 +130,8 @@ def run_preflight(
         if (provider, model) in seen:
             continue
         seen.add((provider, model))
-        check, cost = _probe_model(role, provider, model, client=client, fake=fake)
-        checks.append(check)
-        estimated_cost += cost
+        checks.append(_probe_model(role, provider, model, client=client, sleep=sleep))
+        estimated_cost += _expected_call_cost(provider, model, fake=fake)
 
     ok = all(check.ok for check in checks)
     return PreflightReport(
@@ -134,9 +149,10 @@ def _probe_model(
     model: str,
     *,
     client: CompletionClient,
-    fake: bool,
-) -> tuple[ModelCheck, float]:
+    sleep: Callable[[float], None],
+) -> ModelCheck:
     params, _transforms = transform_params(provider, model, {"max_tokens": PREFLIGHT_MAX_TOKENS})
+    params.update(_minimal_reasoning_params(provider))
     request = CompletionRequest(
         provider=provider,
         model=model,
@@ -144,43 +160,62 @@ def _probe_model(
         messages=[{"role": "user", "content": PREFLIGHT_PROMPT}],
         params=params,
     )
-    try:
-        response = client.complete(request)
-    except ReplayClientError as exc:
-        return (
-            ModelCheck(
+    last_error: ReplayClientError | None = None
+    attempts = 0
+    for attempt in range(PREFLIGHT_MAX_ATTEMPTS):
+        attempts = attempt + 1
+        try:
+            response = client.complete(request)
+        except ReplayClientError as exc:
+            last_error = exc
+            if getattr(exc, "retryable", False) and attempt < PREFLIGHT_MAX_ATTEMPTS - 1:
+                sleep(PREFLIGHT_BACKOFF_BASE_SECONDS * (2**attempt))
+                continue
+            break
+        else:
+            return ModelCheck(
                 role=role,
                 provider=provider,
                 requested_model=model,
-                served_model=None,
-                latency_ms=None,
-                ok=False,
-                error=_error_line(exc, provider, model),
-            ),
-            0.0,
-        )
-    cost = estimate_call_cost_usd(
+                served_model=response.served_model,
+                latency_ms=response.latency_ms,
+                attempts=attempts,
+                ok=True,
+                error=None,
+            )
+    assert last_error is not None
+    return ModelCheck(
+        role=role,
+        provider=provider,
+        requested_model=model,
+        served_model=None,
+        latency_ms=None,
+        attempts=attempts,
+        ok=False,
+        error=_error_line(last_error, provider, model, attempts),
+    )
+
+
+def _minimal_reasoning_params(provider: str) -> dict[str, Any]:
+    # Best-effort: nudge reasoning models to spend the fewest reasoning tokens.
+    # drop_params lets litellm silently ignore it where the model does not support
+    # it, so unsupported providers never fail on this account.
+    if provider == "openai":
+        return {"reasoning_effort": "minimal", "drop_params": True}
+    return {}
+
+
+def _expected_call_cost(provider: str, model: str, *, fake: bool) -> float:
+    return estimate_call_cost_usd(
         provider,
         model,
-        response.usage.get("input_tokens", 0),
-        response.usage.get("output_tokens", 0),
+        plausible_token_count(PREFLIGHT_PROMPT),
+        PREFLIGHT_EXPECTED_OUTPUT_TOKENS,
         fake=fake,
     )
-    return (
-        ModelCheck(
-            role=role,
-            provider=provider,
-            requested_model=model,
-            served_model=response.served_model,
-            latency_ms=response.latency_ms,
-            ok=True,
-            error=None,
-        ),
-        cost,
-    )
 
 
-def _error_line(exc: ReplayClientError, provider: str, model: str) -> str:
+def _error_line(exc: ReplayClientError, provider: str, model: str, attempts: int) -> str:
     status = getattr(exc, "status_code", None)
     if status in (401, 403):
         key_env = required_api_key_env(provider) or "the provider credential"
@@ -191,10 +226,20 @@ def _error_line(exc: ReplayClientError, provider: str, model: str) -> str:
     if status == 404:
         # retired_model_message already carries the retired-model hint.
         return f"{provider}/{model}: {exc}"
+    if status == 400:
+        return (
+            f"{provider}/{model}: request rejected (HTTP 400): {exc} "
+            "Check the model id, request params, or output-token limit."
+        )
     if status == 429 or isinstance(exc, RateLimitError):
         return (
-            f"{provider}/{model}: rate limited or over quota (HTTP 429); "
-            "retry later or raise the provider quota."
+            f"{provider}/{model}: rate limited or over quota (HTTP 429) after "
+            f"{attempts} attempts; retry later or raise the provider quota."
+        )
+    if isinstance(exc, TransientError):
+        return (
+            f"{provider}/{model}: still unavailable (HTTP 5xx) after {attempts} "
+            "attempts; transient capacity issue, retry later."
         )
     return f"{provider}/{model}: {exc}"
 

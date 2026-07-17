@@ -1877,6 +1877,7 @@ def _preflight_table(report: PreflightReport) -> Table:
     table.add_column("Requested model")
     table.add_column("Served model")
     table.add_column("Latency ms")
+    table.add_column("Attempts")
     table.add_column("Result")
     for check in report.checks:
         table.add_row(
@@ -1885,6 +1886,7 @@ def _preflight_table(report: PreflightReport) -> Table:
             check.requested_model,
             str(check.served_model or "-"),
             str(check.latency_ms if check.latency_ms is not None else "-"),
+            str(check.attempts),
             "ok" if check.ok else (check.error or "error"),
         )
     return table
