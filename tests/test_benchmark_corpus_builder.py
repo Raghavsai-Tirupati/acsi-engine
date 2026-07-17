@@ -6,7 +6,13 @@ from pathlib import Path
 import httpx
 import pytest
 
-from scripts.build_oss_issue_corpus import build_corpus, main
+from scripts.build_oss_issue_corpus import (
+    GITHUB_API,
+    MAX_REDIRECTS,
+    _default_client,
+    build_corpus,
+    main,
+)
 
 
 def test_build_corpus_filters_truncates_paginates_and_balances(tmp_path: Path) -> None:
@@ -67,6 +73,72 @@ def test_corpus_builder_cli_missing_token_is_one_line(monkeypatch, tmp_path: Pat
     assert capsys.readouterr().err.strip() == (
         "Set GITHUB_TOKEN to fetch GitHub issues before building the corpus."
     )
+
+
+def test_default_client_follows_redirects_within_a_bound() -> None:
+    with _default_client() as client:
+        assert client.follow_redirects is True
+        assert client.max_redirects == MAX_REDIRECTS == 5
+
+
+def test_repo_301_is_followed_and_notice_records_final_url(tmp_path: Path) -> None:
+    redirected_url = f"{GITHUB_API}/repositories/999/issues"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/repos/owner/a/issues":
+            return httpx.Response(301, headers={"Location": redirected_url})
+        if request.url.path == "/repositories/999/issues":
+            return httpx.Response(200, json=[_issue(1), _issue(2)])
+        return httpx.Response(404, json=[])
+
+    transport = httpx.MockTransport(handler)
+    notices: list[str] = []
+    output = tmp_path / "corpus.jsonl"
+
+    with httpx.Client(transport=transport, follow_redirects=True, max_redirects=5) as client:
+        result = build_corpus(
+            repos=["owner/a"],
+            n=2,
+            output_path=output,
+            token="test-token",
+            client=client,
+            fetched_at="2026-07-16T00:00:00Z",
+            notify=notices.append,
+        )
+
+    # Issues from the redirected page are returned...
+    assert [(item.source_repo, item.issue_number) for item in result.items] == [
+        ("owner/a", 1),
+        ("owner/a", 2),
+    ]
+    # ...provenance stays attributed to the originally-configured repo name...
+    assert {item.source_repo for item in result.items} == {"owner/a"}
+    # ...and exactly one notice names the final URL.
+    assert notices == [f"Repo owner/a redirected to {redirected_url}"]
+
+
+def test_exceeding_redirect_bound_fails_with_actionable_one_liner(tmp_path: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(301, headers={"Location": f"{GITHUB_API}/repositories/1/issues"})
+
+    transport = httpx.MockTransport(handler)
+
+    with (
+        httpx.Client(transport=transport, follow_redirects=True, max_redirects=5) as client,
+        pytest.raises(
+            ValueError,
+            match=r"Repo owner/a exceeded the redirect limit \(max 5\)",
+        ),
+    ):
+        build_corpus(
+                repos=["owner/a"],
+                n=1,
+                output_path=tmp_path / "corpus.jsonl",
+                token="test-token",
+                client=client,
+                fetched_at="2026-07-16T00:00:00Z",
+                notify=lambda _message: None,
+            )
 
 
 def _mock_github(

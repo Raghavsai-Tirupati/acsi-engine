@@ -5,6 +5,7 @@ import json
 import os
 import sys
 from collections import Counter, defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -22,6 +23,15 @@ DEFAULT_OUTPUT = Path("benchmarks/oss-issues/corpus.jsonl")
 GITHUB_API = "https://api.github.com"
 MIN_BODY_CHARS = 200
 MAX_BODY_CHARS = 4_000
+# SPEC-NOTE: HTTP clients touching third-party APIs must handle redirects
+# deliberately — follow with a bound, or fail with a clear message. GitHub issues
+# 301s for renamed/migrated repos (e.g. facebook/react -> /repositories/{id}), so
+# we follow up to MAX_REDIRECTS and never rely on httpx's no-follow default.
+MAX_REDIRECTS = 5
+
+
+def _default_client() -> httpx.Client:
+    return httpx.Client(timeout=30.0, follow_redirects=True, max_redirects=MAX_REDIRECTS)
 
 
 @dataclass(frozen=True)
@@ -84,18 +94,20 @@ def build_corpus(
     client: httpx.Client | None = None,
     fetched_at: str | None = None,
     api_url: str = GITHUB_API,
+    notify: Callable[[str], None] | None = None,
 ) -> CorpusBuildResult:
     if n <= 0:
         raise ValueError("--n must be positive.")
     if not token:
         raise ValueError("Set GITHUB_TOKEN to fetch GitHub issues before building the corpus.")
 
+    emit = notify or (lambda message: print(message, file=sys.stderr))
     timestamp = fetched_at or datetime.now(UTC).isoformat().replace("+00:00", "Z")
     stats = CorpusBuildStats()
     accepted_by_repo: dict[str, list[CorpusItem]] = {}
     seen: set[tuple[str, int]] = set()
     close_client = client is None
-    active_client = client or httpx.Client(timeout=30.0)
+    active_client = client or _default_client()
     try:
         for repo in repos:
             accepted_by_repo[repo] = _fetch_repo_items(
@@ -107,6 +119,7 @@ def build_corpus(
                 api_url=api_url,
                 seen=seen,
                 stats=stats,
+                notify=emit,
             )
     finally:
         if close_client:
@@ -129,20 +142,33 @@ def _fetch_repo_items(
     api_url: str,
     seen: set[tuple[str, int]],
     stats: CorpusBuildStats,
+    notify: Callable[[str], None],
 ) -> list[CorpusItem]:
     items: list[CorpusItem] = []
     page = 1
+    redirect_logged = False
     headers = {
         "Accept": "application/vnd.github+json",
         "Authorization": f"Bearer {token}",
         "X-GitHub-Api-Version": "2022-11-28",
     }
     while len(items) < n:
-        response = client.get(
-            f"{api_url}/repos/{repo}/issues",
-            headers=headers,
-            params={"page": page, "per_page": 100, "state": "closed"},
-        )
+        try:
+            response = client.get(
+                f"{api_url}/repos/{repo}/issues",
+                headers=headers,
+                params={"page": page, "per_page": 100, "state": "closed"},
+            )
+        except httpx.TooManyRedirects as exc:
+            raise ValueError(
+                f"Repo {repo} exceeded the redirect limit (max {MAX_REDIRECTS}); "
+                "verify the configured owner/name or update it to the current repo."
+            ) from exc
+        if response.history and not redirect_logged:
+            # Provenance stays attributed to the originally-configured repo name;
+            # this notice only records where GitHub redirected the request to.
+            notify(f"Repo {repo} redirected to {response.url}")
+            redirect_logged = True
         response.raise_for_status()
         payload = response.json()
         if not isinstance(payload, list):
