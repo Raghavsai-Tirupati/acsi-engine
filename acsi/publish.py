@@ -33,8 +33,21 @@ def publish_certificate(
     cert = json.loads(cert_path.read_text(encoding="utf-8"))
     payload = publish_payload(cert, include_examples=include_examples)
     try:
-        with httpx.Client(transport=transport, timeout=30.0) as client:
+        # SPEC-NOTE: HTTP clients touching third-party APIs must handle redirects
+        # deliberately. Here the choice is to NOT follow: silently re-POSTing a
+        # signed certificate to a redirected host would leak it to an unintended
+        # endpoint. A 3xx fails fast with an actionable message; the operator must
+        # point --url at the correct endpoint.
+        with httpx.Client(
+            transport=transport, timeout=30.0, follow_redirects=False
+        ) as client:
             response = client.post(endpoint, json=payload)
+        if response.is_redirect:
+            raise PublishError(
+                f"Publish endpoint {endpoint} returned HTTP {response.status_code} "
+                f"(redirect to {response.headers.get('location', 'unknown')}); "
+                "point --url at the final endpoint."
+            )
         response.raise_for_status()
     except httpx.HTTPError as exc:
         raise PublishError(f"Publish failed: {exc}") from exc
