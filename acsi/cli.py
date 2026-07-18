@@ -486,6 +486,7 @@ def _write_assertion_results(
                     "baseline_passed": True,
                     "candidate_passed": False,
                     "pair_id": trace_id,
+                    "reason": evaluation.failure_reasons.get(trace_id),
                     "severity": evaluation.severity.value,
                     "trace_id": trace_id,
                 }
@@ -629,12 +630,14 @@ def _load_assertion_failures(path: Path) -> dict[str, list[AssertionFailure]]:
                 continue
             payload = json.loads(line)
             pair_id = str(payload.get("pair_id") or payload.get("trace_id"))
+            reason = payload.get("reason")
             failures.setdefault(pair_id, []).append(
                 AssertionFailure(
                     assertion_id=str(payload["assertion_id"]),
                     severity=Severity(str(payload["severity"])),
                     baseline_passed=bool(payload.get("baseline_passed", True)),
                     candidate_passed=bool(payload.get("candidate_passed", False)),
+                    reason=str(reason) if reason is not None else None,
                 )
             )
     return failures

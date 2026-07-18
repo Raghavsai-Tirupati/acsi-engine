@@ -137,6 +137,56 @@ def test_model_generated_banned_language_is_sanitized(tmp_path: Path) -> None:
 FAKE_CLIENT_BANNER = "FAKE CLIENTS — NOT A CERTIFICATION"
 
 
+def test_cluster_details_surface_assertion_failure_reasons(tmp_path: Path) -> None:
+    manifest_path, manifest, traces, run_dir = _write_inputs(tmp_path)
+    pair_id = str(traces[0].trace_id)
+    _write_jsonl(
+        run_dir / "assertion_results.jsonl",
+        [
+            {
+                "assertion_id": "summary-schema",
+                "baseline_passed": True,
+                "candidate_passed": False,
+                "pair_id": pair_id,
+                "reason": "summary: 612 is longer than 400",
+                "severity": "critical",
+                "trace_id": pair_id,
+            }
+        ],
+    )
+    _write_json(
+        run_dir / "clusters.json",
+        {
+            "clusters": [
+                {
+                    "cluster_id": "cluster-0",
+                    "description": "Schema length failures",
+                    "member_count": 1,
+                    "name": "Summary too long",
+                    "pair_ids": [pair_id],
+                    "severity": "worse_critical",
+                    "share_of_sampled": 1 / 3,
+                }
+            ],
+            "stats": {},
+        },
+    )
+
+    result = build_certificate(
+        manifest=manifest,
+        traces=traces,
+        run_dir=run_dir,
+        manifest_path=manifest_path,
+    )
+    render_report(result.cert, output_path=run_dir / "report.html")
+    cluster = result.payload["clusters"][0]
+    report_text = (run_dir / "report.html").read_text(encoding="utf-8")
+
+    assert "summary: 612 is longer than 400" in cluster["reasons"]
+    assert "Assertion failure reasons" in report_text
+    assert "summary: 612 is longer than 400" in report_text
+
+
 def test_certificate_discloses_dedup_collapse_scope(tmp_path: Path) -> None:
     manifest_path, manifest, traces, run_dir = _write_inputs(tmp_path)
     _write_json(

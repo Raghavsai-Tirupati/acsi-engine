@@ -35,14 +35,23 @@ class AssertionEvaluation:
     pass_count: int = 0
     fail_count: int = 0
     failing_trace_ids: list[str] = field(default_factory=list)
+    failure_reasons: dict[str, str] = field(default_factory=dict)
 
-    def record(self, trace_id: str, passed: bool, max_failures: int) -> None:
+    def record(
+        self,
+        trace_id: str,
+        passed: bool,
+        max_failures: int,
+        reason: str | None = None,
+    ) -> None:
         if passed:
             self.pass_count += 1
             return
         self.fail_count += 1
         if len(self.failing_trace_ids) < max_failures:
             self.failing_trace_ids.append(trace_id)
+            if reason is not None:
+                self.failure_reasons[trace_id] = reason
 
 
 def evaluate_assertion(
@@ -67,11 +76,8 @@ def evaluate_assertion(
         _evaluate_latency_p95(assertion, pairs, evaluation, max_failures)
     else:
         for pair in pairs:
-            evaluation.record(
-                pair.trace_id,
-                _evaluate_pair(assertion, pair),
-                max_failures,
-            )
+            passed, reason = _evaluate_pair(assertion, pair)
+            evaluation.record(pair.trace_id, passed, max_failures, reason=reason)
     if evaluation.fail_count:
         evaluation.status = "failed"
     return evaluation
@@ -89,19 +95,29 @@ def evaluate_assertions(
     ]
 
 
-def _evaluate_pair(assertion: AssertionConfig, pair: AssertionPair) -> bool:
+def _evaluate_pair(assertion: AssertionConfig, pair: AssertionPair) -> tuple[bool, str | None]:
+    """Return (passed, failure_reason). The reason carries the validator message
+    on failure so cluster naming and cert exemplars can be precise."""
     response = pair.candidate
     if assertion.type == "contains":
         expected = str(_config_value(assertion, "value", "text", default=""))
-        return expected in (response.text or "")
+        if expected in (response.text or ""):
+            return True, None
+        return False, f"missing required substring {expected!r}"
     if assertion.type == "not_contains":
         forbidden = str(_config_value(assertion, "value", "text", default=""))
-        return forbidden not in (response.text or "")
+        if forbidden not in (response.text or ""):
+            return True, None
+        return False, f"forbidden substring present {forbidden!r}"
     if assertion.type == "regex":
         pattern = str(_config_value(assertion, "pattern", default=""))
-        return re.search(pattern, response.text or "") is not None
+        if re.search(pattern, response.text or "") is not None:
+            return True, None
+        return False, f"pattern {pattern!r} did not match"
     if assertion.type == "json_valid":
-        return json_valid(response)
+        if json_valid(response):
+            return True, None
+        return False, "response is not valid JSON"
     if assertion.type == "json_schema":
         return _json_schema_passes(assertion, response)
     if assertion.type == "numeric_field_equal":
@@ -109,7 +125,9 @@ def _evaluate_pair(assertion: AssertionConfig, pair: AssertionPair) -> bool:
     if assertion.type == "length_range":
         return _length_range(assertion, response)
     if assertion.type == "refusal":
-        return not (is_refusal(response) and not is_refusal(pair.baseline))
+        if not (is_refusal(response) and not is_refusal(pair.baseline)):
+            return True, None
+        return False, "candidate refused but baseline did not"
     raise ValueError(f"Unsupported assertion type for deterministic evaluation: {assertion.type}")
 
 
@@ -135,46 +153,70 @@ def _evaluate_latency_p95(
         evaluation.pass_count = len(latencies)
     else:
         evaluation.fail_count = 1
-        evaluation.failing_trace_ids = [
-            pair.trace_id
+        over = [
+            pair
             for pair in pairs
             if pair.candidate.latency_ms is not None and pair.candidate.latency_ms > max_latency
         ][:max_failures]
+        evaluation.failing_trace_ids = [pair.trace_id for pair in over]
+        for pair in over:
+            evaluation.failure_reasons[pair.trace_id] = (
+                f"latency {pair.candidate.latency_ms}ms exceeds max {max_latency:.0f}ms "
+                f"(suite p95 {p95:.0f}ms)"
+            )
 
 
-def _json_schema_passes(assertion: AssertionConfig, response: DiffResponse) -> bool:
+def _json_schema_passes(
+    assertion: AssertionConfig,
+    response: DiffResponse,
+) -> tuple[bool, str | None]:
     schema = _config_value(assertion, "schema", default=None)
     if schema is None:
         raise ValueError("json_schema assertion requires an inline schema.")
     parsed = parse_json(response.text)
     if not parsed.parsed:
-        return False
+        return False, "response is not valid JSON"
     try:
         validate_json_schema(parsed.value, schema)
-    except JsonSchemaValidationError:
-        return False
-    return True
+    except JsonSchemaValidationError as exc:
+        return False, _schema_error_reason(exc)
+    return True, None
 
 
-def _numeric_field_equal(assertion: AssertionConfig, response: DiffResponse) -> bool:
+def _schema_error_reason(exc: JsonSchemaValidationError) -> str:
+    path = ".".join(str(part) for part in exc.absolute_path)
+    return f"{path}: {exc.message}" if path else exc.message
+
+
+def _numeric_field_equal(
+    assertion: AssertionConfig,
+    response: DiffResponse,
+) -> tuple[bool, str | None]:
     field = str(_config_value(assertion, "field", "json_path", default=""))
     expected = _config_value(assertion, "expected", "value", default=None)
     parsed = parse_json(response.text)
     if not parsed.parsed:
-        return False
+        return False, "response is not valid JSON"
     value = _lookup_path(parsed.value, field)
-    return (
+    if (
         isinstance(value, int | float)
         and isinstance(expected, int | float)
         and value == expected
-    )
+    ):
+        return True, None
+    return False, f"{field}={value!r} != expected {expected!r}"
 
 
-def _length_range(assertion: AssertionConfig, response: DiffResponse) -> bool:
+def _length_range(
+    assertion: AssertionConfig,
+    response: DiffResponse,
+) -> tuple[bool, str | None]:
     length = length_chars(response)
     if assertion.min_chars is not None and length < assertion.min_chars:
-        return False
-    return not (assertion.max_chars is not None and length > assertion.max_chars)
+        return False, f"length {length} < min {assertion.min_chars}"
+    if assertion.max_chars is not None and length > assertion.max_chars:
+        return False, f"length {length} > max {assertion.max_chars}"
+    return True, None
 
 
 def _lookup_path(payload: Any, path: str) -> Any:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -53,6 +54,7 @@ class AssertionFailure:
     severity: Severity
     baseline_passed: bool = True
     candidate_passed: bool = False
+    reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -197,6 +199,9 @@ def build_regression_set(records: list[CandidatePairRecord]) -> list[RegressionP
         else:
             detection_source = "assertion"
         flipped_ids = sorted(failure.assertion_id for failure in assertion_failures)
+        assertion_reasons = sorted(
+            failure.reason for failure in assertion_failures if failure.reason
+        )
         severity_rank = _regression_severity_rank(record.ensemble_outcome, assertion_failures)
         regressions.append(
             RegressionPair(
@@ -214,6 +219,7 @@ def build_regression_set(records: list[CandidatePairRecord]) -> list[RegressionP
                     record.ensemble_outcome,
                     record.judge_reasons,
                     record.candidate_response,
+                    assertion_reasons=assertion_reasons,
                 ),
                 severity_rank=severity_rank,
                 template_id=record.template_id,
@@ -228,9 +234,13 @@ def compose_signature(
     ensemble_outcome: CandidateOutcome,
     judge_reasons: list[str],
     candidate_response: str,
+    assertion_reasons: Sequence[str] = (),
 ) -> str:
+    # Assertion validator messages (e.g. "summary: 612 is longer than 400") feed
+    # the naming input so length/schema failures are not mislabeled generically.
     pieces = [
         " ".join(flipped_assertion_ids),
+        " ".join(assertion_reasons),
         ensemble_outcome,
         " ".join(judge_reasons),
         candidate_response[:500],

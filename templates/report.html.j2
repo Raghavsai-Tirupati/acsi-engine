@@ -196,6 +196,14 @@
         <p class="small">Severity: {{ cluster.severity }}; share: {{ cluster.share_of_sampled|pct }}</p>
         <button type="button" x-on:click="open=!open">Details</button>
         <div x-show="open">
+          {% if cluster.reasons %}
+          <p class="small"><strong>Assertion failure reasons</strong></p>
+          <ul class="small">
+            {% for reason in cluster.reasons %}
+            <li>{{ reason }}</li>
+            {% endfor %}
+          </ul>
+          {% endif %}
           {% for exemplar in cluster.exemplars %}
           <pre>{{ exemplar }}</pre>
           {% endfor %}

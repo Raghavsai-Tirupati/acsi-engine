@@ -153,6 +153,7 @@ def build_certificate(
         clusters_payload,
         patches_payload,
         traces,
+        assertion_reasons=_assertion_reasons_by_pair(assertion_rows),
         sanitizer=sanitizer,
     )
     coverage_sentence = _coverage_sentence(
@@ -506,6 +507,7 @@ def _certificate_clusters(
     patches_payload: dict[str, Any],
     traces: list[TraceRecord],
     *,
+    assertion_reasons: dict[str, list[str]],
     sanitizer: Sanitizer,
 ) -> list[dict[str, Any]]:
     traces_by_id = {str(trace.trace_id): trace for trace in traces}
@@ -521,6 +523,7 @@ def _certificate_clusters(
             for pair_id in pair_ids
             if pair_id in traces_by_id
         ][:3]
+        cluster_reasons = _distinct_cluster_reasons(pair_ids, assertion_reasons)
         cluster_id = str(cluster.get("cluster_id"))
         patch_diff = accepted_patches.get(cluster_id)
         clusters.append(
@@ -531,11 +534,39 @@ def _certificate_clusters(
                 "exemplars": [sanitizer.sanitize_text(exemplar) for exemplar in exemplars],
                 "name": sanitizer.sanitize_text(str(cluster.get("name", ""))),
                 "patch_diff": sanitizer.sanitize_text(patch_diff) if patch_diff else None,
+                "reasons": [sanitizer.sanitize_text(reason) for reason in cluster_reasons],
                 "severity": cluster.get("severity"),
                 "share_of_sampled": cluster.get("share_of_sampled"),
             }
         )
     return clusters
+
+
+def _assertion_reasons_by_pair(assertion_rows: list[dict[str, Any]]) -> dict[str, list[str]]:
+    reasons: dict[str, list[str]] = {}
+    for row in assertion_rows:
+        reason = row.get("reason")
+        if not reason:
+            continue
+        pair_id = str(row.get("pair_id") or row.get("trace_id"))
+        reasons.setdefault(pair_id, []).append(str(reason))
+    return reasons
+
+
+def _distinct_cluster_reasons(
+    pair_ids: list[str],
+    assertion_reasons: dict[str, list[str]],
+    *,
+    limit: int = 5,
+) -> list[str]:
+    seen: list[str] = []
+    for pair_id in pair_ids:
+        for reason in assertion_reasons.get(pair_id, []):
+            if reason not in seen:
+                seen.append(reason)
+            if len(seen) >= limit:
+                return seen
+    return seen
 
 
 def _accepted_patches(patches_payload: dict[str, Any]) -> dict[str, str]:

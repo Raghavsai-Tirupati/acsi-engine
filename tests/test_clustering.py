@@ -52,6 +52,26 @@ def test_regression_set_sources_and_signature_order() -> None:
     ) == f"a1 a2 worse_critical reason one. reason two. {'x' * 500}"
 
 
+def test_assertion_reason_feeds_naming_signature() -> None:
+    records = [
+        _record(
+            "schema-len",
+            outcome="equivalent",
+            failures=[
+                AssertionFailure(
+                    "summary-schema",
+                    Severity.CRITICAL,
+                    reason="summary: 612 is longer than 400",
+                )
+            ],
+        )
+    ]
+
+    regressions = build_regression_set(records)
+
+    assert "summary: 612 is longer than 400" in regressions[0].signature
+
+
 def test_small_n_guard_emits_all_regressions_bucket() -> None:
     regressions = build_regression_set([_record(f"p{i}", outcome="worse_minor") for i in range(4)])
 

@@ -91,6 +91,27 @@ def test_judge_classifier_is_deferred() -> None:
     assert result.fail_count == 0
 
 
+def test_assertion_failures_carry_validator_reasons() -> None:
+    schema = _assertion(
+        "json_schema",
+        schema={
+            "type": "object",
+            "properties": {"summary": {"type": "string", "maxLength": 5}},
+        },
+    )
+    schema_eval = evaluate_assertion(schema, [_pair("t1", "{}", '{"summary": "way too long"}')])
+    assert schema_eval.status == "failed"
+    assert "summary" in schema_eval.failure_reasons["t1"]
+
+    length = _assertion("length_range", max_chars=3)
+    length_eval = evaluate_assertion(length, [_pair("t2", "ok", "far too long")])
+    assert length_eval.failure_reasons["t2"] == "length 12 > max 3"
+
+    fence = _assertion("not_contains", value="```")
+    fence_eval = evaluate_assertion(fence, [_pair("t3", "ok", "here is ``` a fence")])
+    assert "```" in fence_eval.failure_reasons["t3"]
+
+
 def _pair(trace_id: str, baseline: str, candidate: str) -> AssertionPair:
     return AssertionPair(
         trace_id=trace_id,
