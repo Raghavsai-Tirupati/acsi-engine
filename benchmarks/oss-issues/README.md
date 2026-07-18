@@ -53,12 +53,20 @@ it needs; unset any that a step does not list.
 
 5. **Run** — full certification pipeline (scrub → sample → baseline → replay →
    diff → judge → cluster → verdict → cert). Requires: `ANTHROPIC_API_KEY`,
-   `OPENAI_API_KEY`, `GEMINI_API_KEY`.
+   `OPENAI_API_KEY`, `GEMINI_API_KEY`. Pass `--live` to call the real providers;
+   the preflight table then shows `Mode: LIVE` and the estimated spend, and a
+   missing credential aborts before any provider call.
 
    ```bash
    acsi run --manifest benchmarks/oss-issues/acsi.yaml \
-     --traces .acsi/traces/oss-issue-summary.jsonl --yes
+     --traces .acsi/traces/oss-issue-summary.jsonl --live --yes
    ```
+
+   `acsi run` is **fake-by-default**: without `--live` it drives the whole
+   pipeline with deterministic `Fake*` clients at zero provider spend. Fake mode
+   is for wiring, CI, and dry-runs — its certificate is watermarked
+   `client_mode: fake` and its `report.html` carries a "FAKE CLIENTS — NOT A
+   CERTIFICATION" banner. Only a `--live` run produces a real certificate.
 
 ## Attribution
 
