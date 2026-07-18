@@ -67,6 +67,7 @@ def build_certificate(
     manifest_path: Path,
     cert_path: Path | None = None,
     degraded: bool = False,
+    client_mode: str = "fake",
     authored_context: list[str] | None = None,
 ) -> BuildCertificateResult:
     assert_authored_strings_clean(*(authored_context or []))
@@ -184,6 +185,12 @@ def build_certificate(
             if cluster.get("patch_diff")
         ],
         "assertions_by_severity": _assertions_by_severity(assertion_rows, manifest),
+        # SPEC-NOTE: the live-gap task asked for `mode: "fake"` in the payload, but
+        # the top-level `mode` key already carries the degraded/standard verdict
+        # context (asserted in tests, read by publish.py). To keep verdict
+        # machinery untouched, the fake/live client watermark lives in a dedicated
+        # `client_mode` key ("fake" or "live") that the report banner keys off.
+        "client_mode": client_mode,
         "candidate_disagreement": candidate_ci,
         "candidate_regression_rate": candidate_ci["rate"],
         "clusters": clusters,

@@ -134,6 +134,44 @@ def test_model_generated_banned_language_is_sanitized(tmp_path: Path) -> None:
     assert "proven equivalent" not in report_text
 
 
+FAKE_CLIENT_BANNER = "FAKE CLIENTS — NOT A CERTIFICATION"
+
+
+def test_fake_run_certificate_is_watermarked_in_payload_and_report(tmp_path: Path) -> None:
+    manifest_path, manifest, traces, run_dir = _write_inputs(tmp_path)
+
+    result = build_certificate(
+        manifest=manifest,
+        traces=traces,
+        run_dir=run_dir,
+        manifest_path=manifest_path,
+        client_mode="fake",
+    )
+    render_report(result.cert, output_path=run_dir / "report.html")
+    report_text = (run_dir / "report.html").read_text(encoding="utf-8")
+
+    assert result.payload["client_mode"] == "fake"
+    assert FAKE_CLIENT_BANNER in report_text
+
+
+def test_live_run_certificate_report_omits_fake_banner(tmp_path: Path) -> None:
+    manifest_path, manifest, traces, run_dir = _write_inputs(tmp_path)
+
+    result = build_certificate(
+        manifest=manifest,
+        traces=traces,
+        run_dir=run_dir,
+        manifest_path=manifest_path,
+        client_mode="live",
+    )
+    render_report(result.cert, output_path=run_dir / "report.html")
+    report_text = (run_dir / "report.html").read_text(encoding="utf-8")
+
+    assert result.payload["client_mode"] == "live"
+    assert FAKE_CLIENT_BANNER not in report_text
+    assert "FAKE CLIENTS" not in report_text
+
+
 def _write_inputs(tmp_path: Path) -> tuple[Path, WorkloadManifest, list, Path]:
     manifest_path = tmp_path / "acsi.yaml"
     manifest_payload = {
