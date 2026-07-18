@@ -129,7 +129,9 @@ class LiveJudge:
 
     def complete(self, request: CompletionRequest) -> CompletionResponse:
         try:
-            import litellm
+            from acsi.replay.litellm_env import import_litellm
+
+            litellm = import_litellm()
         except ImportError as exc:
             raise PermanentError(
                 "Install litellm to use live judge calls.",

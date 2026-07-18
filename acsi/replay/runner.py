@@ -318,6 +318,9 @@ def estimate_call_cost_usd(
         input_price, output_price = FAKE_PRICE_PER_TOKEN.get(provider, (0.00000001, 0.00000002))
         return input_tokens * input_price + output_tokens * output_price
     try:
+        from acsi.replay.litellm_env import import_litellm
+
+        import_litellm()
         from litellm.cost_calculator import cost_per_token
 
         prompt_cost, completion_cost = cost_per_token(
