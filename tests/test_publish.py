@@ -68,7 +68,7 @@ def _cert() -> dict:
                     "share_of_sampled": 0.08,
                 }
             ],
-            "cost_latency": {"tokenizer_inflation": 1.2},
+            "cost_latency": {"output_length_inflation": 1.2},
             "coverage": {"n": 100},
             "criteria": [{"id": "critical_assertions", "passed": False}],
             "mode": "standard",

@@ -105,7 +105,7 @@ def test_demo_runs_pass_and_block_and_verifies_both_certs(tmp_path: Path) -> Non
     assert "100.0%" in block_html
     assert "1.00" in block_html
 
-    assert re.search(r"Tokenizer inflation</th><td>-?\d+\.\d{2}×", block_html)
+    assert re.search(r"Output length inflation</th><td>-?\d+\.\d{2}×", block_html)
     assert re.search(r"Latency delta</th><td>-?\d+ ms", block_html)
     assert re.search(r"USD delta</th><td>\$-?\d+\.\d{4}", block_html)
     assert not LONG_RAW_FLOAT_RE.search(pass_html)

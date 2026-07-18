@@ -657,13 +657,19 @@ def _cost_latency_payload(
 ) -> dict[str, Any]:
     baseline_tokens = _mean_output_tokens(baseline_calls)
     candidate_tokens = _mean_output_tokens(candidate_calls)
+    # SPEC-NOTE: this ratio compares mean OUTPUT-token counts, so it measures
+    # output-length inflation, not tokenizer inflation. It was previously keyed
+    # "tokenizer_inflation", which was wrong: tokenizer inflation is the ratio of
+    # two tokenizers over the SAME text, and computing it needs both providers'
+    # tokenizers loaded — not available offline/cheaply here — so it is omitted
+    # rather than approximated.
     return {
         "baseline_mean_latency_ms": _mean_latency(baseline_calls),
         "baseline_mean_output_tokens": baseline_tokens,
         "candidate_mean_latency_ms": _mean_latency(candidate_calls),
         "candidate_mean_output_tokens": candidate_tokens,
         "latency_delta_ms": _mean_latency(candidate_calls) - _mean_latency(baseline_calls),
-        "tokenizer_inflation": candidate_tokens / baseline_tokens if baseline_tokens else None,
+        "output_length_inflation": candidate_tokens / baseline_tokens if baseline_tokens else None,
         "usd_delta": round(_total_cost(candidate_calls) - _total_cost(baseline_calls), 12),
     }
 

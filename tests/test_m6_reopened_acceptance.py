@@ -323,7 +323,7 @@ def test_scrub_counts_judge_visible_text_and_cert_exemplars(tmp_path: Path) -> N
     assert RAW_PII_RE.search(json.dumps(cert.payload)) is None
 
 
-def test_tokenizer_inflation_reports_1_3x(tmp_path: Path) -> None:
+def test_output_length_inflation_reports_1_3x(tmp_path: Path) -> None:
     manifest_path = _write_manifest(tmp_path / "acsi.yaml", n=3)
     manifest = WorkloadManifest.model_validate(json.loads(manifest_path.read_text()))
     traces = _fixture_traces(3)
@@ -344,7 +344,7 @@ def test_tokenizer_inflation_reports_1_3x(tmp_path: Path) -> None:
         run_dir=run_dir,
         manifest_path=manifest_path,
     )
-    assert cert.payload["cost_latency"]["tokenizer_inflation"] == 1.3
+    assert cert.payload["cost_latency"]["output_length_inflation"] == 1.3
 
 
 def test_publish_mocktransport_and_no_url_cli_error(tmp_path: Path) -> None:
@@ -363,7 +363,7 @@ def test_publish_mocktransport_and_no_url_cli_error(tmp_path: Path) -> None:
                     "share_of_sampled": 0.08,
                 }
             ],
-            "cost_latency": {"tokenizer_inflation": 1.3},
+            "cost_latency": {"output_length_inflation": 1.3},
             "coverage": {"n": 1},
             "criteria": [],
             "mode": "standard",

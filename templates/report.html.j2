@@ -214,7 +214,7 @@
           <tr><th>Latency delta</th><td>{{ payload.cost_latency.latency_delta_ms|ms }}</td></tr>
           <tr><th>Baseline mean output tokens</th><td>{{ payload.cost_latency.baseline_mean_output_tokens|decimal(1) }}</td></tr>
           <tr><th>Candidate mean output tokens</th><td>{{ payload.cost_latency.candidate_mean_output_tokens|decimal(1) }}</td></tr>
-          <tr><th>Tokenizer inflation</th><td>{{ payload.cost_latency.tokenizer_inflation|multiplier }}</td></tr>
+          <tr><th>Output length inflation</th><td>{{ payload.cost_latency.output_length_inflation|multiplier }}</td></tr>
           <tr><th>USD delta</th><td>{{ payload.cost_latency.usd_delta|usd }}</td></tr>
         </tbody>
       </table>

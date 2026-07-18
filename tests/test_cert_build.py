@@ -35,7 +35,7 @@ def test_build_certificate_signs_renders_and_verifies(tmp_path: Path) -> None:
     assert "0 critical failures observed at n=3" in result.payload["coverage"][
         "zero_event_bound_sentence"
     ]
-    assert result.payload["cost_latency"]["tokenizer_inflation"] == 2.0
+    assert result.payload["cost_latency"]["output_length_inflation"] == 2.0
     assert verify_certificate(run_dir / "cert.json")["payload"]["verdict"] == "PASS"
     assert report_hash
     assert b"\r\n" not in (run_dir / "cert.json").read_bytes()
