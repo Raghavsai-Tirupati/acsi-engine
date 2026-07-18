@@ -144,9 +144,10 @@ async def replay(
     halt_event = asyncio.Event()
     dispatch_lock = asyncio.Lock()
     dispatch_count = 0
+    halt_exception: BaseException | None = None
 
     async def run_one(trace: TraceRecord, sample_index: int) -> None:
-        nonlocal dispatch_count
+        nonlocal dispatch_count, halt_exception
         if halt_event.is_set():
             return
 
@@ -219,12 +220,16 @@ async def replay(
                         config.interrupt_after_dispatches is not None
                         and dispatch_count >= config.interrupt_after_dispatches
                     ):
+                        interrupted = ReplayInterrupted(config.resume_command)
+                        halt_exception = halt_exception or interrupted
                         halt_event.set()
-                        raise ReplayInterrupted(config.resume_command)
+                        raise interrupted
             except PermanentError as exc:
                 if exc.run_level:
+                    aborted = ReplayAbortError(str(exc), status_code=exc.status_code)
+                    halt_exception = halt_exception or aborted
                     halt_event.set()
-                    raise ReplayAbortError(str(exc), status_code=exc.status_code) from exc
+                    raise aborted from exc
                 store.write_error(
                     run_id=config.run_id,
                     trace_id=trace_id,
@@ -258,6 +263,13 @@ async def replay(
     if halt_event.is_set():
         _cancel_pending(tasks)
     await asyncio.gather(*tasks, return_exceptions=True)
+
+    # A run-fatal abort/interrupt raised by one task can be missed by the loop
+    # above if a sibling task completes and trips the halt check first, letting
+    # the final gather swallow it. Re-raise it so a provider-fatal stage never
+    # returns "completed". Budget halts set only halted_reason and return here.
+    if halt_exception is not None:
+        raise halt_exception
 
     return result
 
