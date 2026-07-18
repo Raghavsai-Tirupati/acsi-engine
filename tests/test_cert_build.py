@@ -137,6 +137,37 @@ def test_model_generated_banned_language_is_sanitized(tmp_path: Path) -> None:
 FAKE_CLIENT_BANNER = "FAKE CLIENTS — NOT A CERTIFICATION"
 
 
+def test_certificate_discloses_dedup_collapse_scope(tmp_path: Path) -> None:
+    manifest_path, manifest, traces, run_dir = _write_inputs(tmp_path)
+    _write_json(
+        run_dir / "sampling_report.json",
+        {
+            "dedup": {"collapsed_count": 2, "jaccard_threshold": 0.9, "shingle_size": 5},
+            "n_available_after_dedup": 3,
+            "sampling_mode": "exhaustive",
+            "strata": [{"available": 3, "key": "all", "sampled": 3}],
+        },
+    )
+
+    result = build_certificate(
+        manifest=manifest,
+        traces=traces,
+        run_dir=run_dir,
+        manifest_path=manifest_path,
+    )
+    render_report(result.cert, output_path=run_dir / "report.html")
+    coverage = result.payload["coverage"]
+    report_text = (run_dir / "report.html").read_text(encoding="utf-8")
+
+    assert coverage["n_collected"] == 5
+    assert coverage["n_after_dedup"] == 3
+    assert coverage["dedup_collapsed"] == 2
+    assert coverage["dedup_method"] == {"jaccard_threshold": 0.9, "shingle_size": 5}
+    assert "Traces collected" in report_text
+    assert "Dedup collapsed" in report_text
+    assert "jaccard ≥ 0.9" in report_text
+
+
 def _judgment_row(pair_id: str, judge: str, outcome: str | None, reason: str | None = None) -> dict:
     return {"abstain_reason": reason, "judge": judge, "outcome": outcome, "pair_id": pair_id}
 

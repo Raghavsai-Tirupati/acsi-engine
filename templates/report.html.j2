@@ -225,6 +225,9 @@
       <table>
         <tbody>
           <tr><th>Workload</th><td>{{ payload.scope.workload }}</td></tr>
+          <tr><th>Traces collected</th><td>{{ payload.coverage.n_collected }}</td></tr>
+          <tr><th>After dedup</th><td>{{ payload.coverage.n_after_dedup }}</td></tr>
+          <tr><th>Dedup collapsed</th><td>{{ payload.coverage.dedup_collapsed }} (jaccard ≥ {{ payload.coverage.dedup_method.jaccard_threshold }}, shingle {{ payload.coverage.dedup_method.shingle_size }})</td></tr>
           <tr><th>Sample size</th><td>{{ payload.coverage.n }}</td></tr>
           <tr><th>Sampling method</th><td>{{ payload.coverage.sampling_method }}</td></tr>
           <tr><th>Exclusion percent</th><td>{{ payload.coverage.exclusion_percent|pct_value }}</td></tr>

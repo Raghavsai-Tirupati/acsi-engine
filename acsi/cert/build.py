@@ -171,6 +171,7 @@ def build_certificate(
         "sampling_method": str(sampling_report.get("sampling_mode") or "unknown"),
         "strata": sampling_report.get("strata", []),
         "zero_event_bound_sentence": zero_event_sentence,
+        **_dedup_scope(sampling_report),
     }
     if human_overrides["count"]:
         count = human_overrides["count"]
@@ -595,6 +596,24 @@ def _coverage_percent(sampling_report: dict[str, Any], traces: list[TraceRecord]
 def _exclusion_percent(sampling_report: dict[str, Any]) -> float:
     value = sampling_report.get("exclusion_percent", 0.0)
     return round(float(value), 12)
+
+
+def _dedup_scope(sampling_report: dict[str, Any]) -> dict[str, Any]:
+    # Disclose what near-duplicate collapse removed before sampling. Without this,
+    # an "exhaustive, 0.0% excluded" line hides that N collected traces were
+    # collapsed into representatives (run #1 collapsed 21 silently).
+    dedup = sampling_report.get("dedup") or {}
+    collapsed = int(dedup.get("collapsed_count", 0))
+    n_after_dedup = int(sampling_report.get("n_available_after_dedup", 0))
+    return {
+        "dedup_collapsed": collapsed,
+        "dedup_method": {
+            "jaccard_threshold": dedup.get("jaccard_threshold"),
+            "shingle_size": dedup.get("shingle_size"),
+        },
+        "n_after_dedup": n_after_dedup,
+        "n_collected": n_after_dedup + collapsed,
+    }
 
 
 def _zero_event_sentence(n: int) -> str:
