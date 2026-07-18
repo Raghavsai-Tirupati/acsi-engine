@@ -52,6 +52,15 @@ class CertificateVerificationError(ValueError):
     pass
 
 
+class EvidenceFloorError(ValueError):
+    # SPEC-NOTE: this certifier fails closed. Absence of evidence is a run
+    # failure, never a pass: a verdict may only be issued when the sampled pairs
+    # are actually covered by candidate responses (and, transitively, assertion
+    # evaluations). A stage that "completed" on rejected provider calls yields no
+    # certificate, never PASS and never BLOCK.
+    pass
+
+
 @dataclass(frozen=True)
 class BuildCertificateResult:
     cert: dict[str, Any]
@@ -94,6 +103,10 @@ def build_certificate(
     )
     baseline_calls = _read_jsonl(_first_existing([run_dir / "baseline" / "responses.jsonl"]))
     candidate_calls = _read_jsonl(_first_existing([run_dir / "candidate" / "responses.jsonl"]))
+
+    # Fail closed: refuse to issue any verdict unless every sampled pair has a
+    # candidate response. The single chokepoint that no verdict path can bypass.
+    _assert_candidate_coverage(traces, candidate_calls)
 
     n = len(traces)
     # SPEC-NOTE: reclassify pairs below the panel floor to "unresolved" so a lone
@@ -508,6 +521,25 @@ def _assertions_by_severity(
         }
         for severity in ("critical", "major", "minor")
     }
+
+
+def _assert_candidate_coverage(
+    traces: list[TraceRecord],
+    candidate_calls: list[dict[str, Any]],
+) -> None:
+    sampled_ids = {str(trace.trace_id) for trace in traces}
+    covered = {
+        str(call.get("trace_id"))
+        for call in candidate_calls
+        if int(call.get("sample_index", 0)) == 0
+    }
+    missing = sampled_ids - covered
+    if missing:
+        raise EvidenceFloorError(
+            "run invalid: candidate responses cover "
+            f"{len(sampled_ids) - len(missing)}/{len(sampled_ids)} sampled pairs; "
+            "refusing to issue a verdict"
+        )
 
 
 def _certificate_clusters(

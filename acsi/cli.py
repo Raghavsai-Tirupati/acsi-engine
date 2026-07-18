@@ -6,6 +6,7 @@ import io
 import json
 import os
 import shutil
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
@@ -20,6 +21,7 @@ from acsi.baseline import run_baseline as run_baseline_stage
 from acsi.cert.build import (
     BannedLanguageError,
     CertificateVerificationError,
+    EvidenceFloorError,
     build_certificate,
     verify_certificate,
 )
@@ -438,6 +440,52 @@ def _load_response_calls(path: Path) -> list[StoredCall]:
                 )
             )
     return calls
+
+
+def _assert_evidence_floor(
+    sampled_records: list[TraceRecord],
+    baseline_calls: list[StoredCall],
+    candidate_calls: list[StoredCall],
+    manifest_model,
+    *,
+    degraded: bool,
+) -> None:
+    """Fail closed before any verdict: the sampled workload must be fully covered.
+
+    Absence of evidence is a run failure, never a pass. Checks candidate coverage
+    (100% of sampled pairs), assertion-pair coverage (a baseline+candidate pair
+    for every sampled trace), and — outside degraded mode — that the noise floor
+    has the manifest's k_baseline samples per pair.
+    """
+    sampled_ids = {str(record.trace_id) for record in sampled_records}
+    n = len(sampled_ids)
+    if n == 0:
+        raise EvidenceFloorError("run invalid: zero sampled pairs to certify")
+
+    candidate_ids = {call.trace_id for call in candidate_calls if call.sample_index == 0}
+    missing_candidate = sampled_ids - candidate_ids
+    if missing_candidate:
+        raise EvidenceFloorError(
+            "run invalid: candidate responses cover "
+            f"{n - len(missing_candidate)}/{n} sampled pairs (need 100%)"
+        )
+
+    baseline_counts = Counter(call.trace_id for call in baseline_calls)
+    unpaired = [trace_id for trace_id in sampled_ids if baseline_counts.get(trace_id, 0) < 1]
+    if unpaired:
+        raise EvidenceFloorError(
+            f"run invalid: {len(unpaired)}/{n} pairs lack a baseline response, so "
+            "assertions cannot be evaluated for every pair"
+        )
+
+    if not degraded:
+        k = manifest_model.sampling.k_baseline
+        short = [trace_id for trace_id in sampled_ids if baseline_counts.get(trace_id, 0) < k]
+        if short:
+            raise EvidenceFloorError(
+                f"run invalid: {len(short)}/{n} pairs have fewer than "
+                f"k_baseline={k} noise-floor samples"
+            )
 
 
 def _stored_diff_response(call: StoredCall) -> DiffResponse:
@@ -1065,6 +1113,16 @@ def run(
 
         baseline_calls = _load_response_calls(active_run_dir / "baseline" / "responses.jsonl")
         candidate_calls = _load_response_calls(active_run_dir / "candidate" / "responses.jsonl")
+
+        # Evidence floor: no diff / judge / verdict unless the sampled workload is
+        # actually covered. Runs on every invocation (including resume).
+        _assert_evidence_floor(
+            sampled_records,
+            baseline_calls,
+            candidate_calls,
+            manifest_model,
+            degraded=degraded,
+        )
 
         if not _stage_finished(stages, "diff"):
             assertion_hash, assertion_failures = _write_assertion_results(
