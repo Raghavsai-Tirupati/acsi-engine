@@ -117,15 +117,15 @@ def test_demo_runs_pass_and_block_and_verifies_both_certs(tmp_path: Path) -> Non
     single_judge_cert["payload"]["judge_panel"].update(
         {
             "agreement_percent": None,
-            "agreement_reason": "alpha requires ≥2 judges",
+            "agreement_reason": "requires ≥2 judges with comparable verdicts",
             "krippendorff_alpha": None,
-            "krippendorff_alpha_reason": "alpha requires ≥2 judges",
+            "krippendorff_alpha_reason": "requires ≥2 judges with comparable verdicts",
             "models": ["openai/fake-judge-a"],
         }
     )
     single_judge_report = tmp_path / "single-judge-report.html"
     render_report(single_judge_cert, output_path=single_judge_report)
-    assert "n/a — alpha requires ≥2 judges" in single_judge_report.read_text(
+    assert "n/a — requires ≥2 judges with comparable verdicts" in single_judge_report.read_text(
         encoding="utf-8"
     )
 

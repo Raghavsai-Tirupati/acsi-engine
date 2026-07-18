@@ -180,6 +180,8 @@
           <tr><th>Models</th><td>{{ payload.judge_panel.models|join(", ") }}</td></tr>
           <tr><th>Families</th><td>{{ payload.judge_panel.families|join(", ") }}</td></tr>
           <tr><th>Order swap</th><td>{{ payload.judge_panel.order_swap }}</td></tr>
+          <tr><th>Pairs judged</th><td>{{ payload.judge_panel.completed_pairs }}</td></tr>
+          <tr><th>Judge calls</th><td>{{ payload.judge_panel.judge_calls }}</td></tr>
           <tr><th>Agreement</th><td>{% if payload.judge_panel.agreement_percent is not none %}{{ payload.judge_panel.agreement_percent|pct_value }}{% else %}n/a — {{ payload.judge_panel.agreement_reason }}{% endif %}</td></tr>
           <tr><th>Alpha</th><td>{% if payload.judge_panel.krippendorff_alpha is not none %}{{ payload.judge_panel.krippendorff_alpha|decimal(2) }}{% else %}n/a — {{ payload.judge_panel.krippendorff_alpha_reason }}{% endif %}</td></tr>
           <tr><th>Calibration</th><td>{% if payload.judge_panel.calibration_accuracy is not none %}{{ payload.judge_panel.calibration_accuracy|pct }}{% else %}n/a — {{ payload.judge_panel.calibration_accuracy_reason }}{% endif %}</td></tr>

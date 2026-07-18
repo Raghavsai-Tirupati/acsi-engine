@@ -202,7 +202,7 @@ def build_certificate(
         "delta": _delta_ci(candidate_ci, noise_ci),
         "engine_version": __version__,
         "human_overrides": human_overrides,
-        "judge_panel": _judge_panel(judge_stats),
+        "judge_panel": _judge_panel(judge_stats, judged=bool(judgment_rows)),
         "manifest": {
             "baseline": manifest.baseline.model_dump(mode="json"),
             "candidate": manifest.candidate.model_dump(mode="json"),
@@ -604,12 +604,19 @@ def _zero_event_sentence(n: int) -> str:
     )
 
 
-def _judge_panel(judge_stats: dict[str, Any]) -> dict[str, Any]:
+def _judge_panel(judge_stats: dict[str, Any], *, judged: bool) -> dict[str, Any]:
     judges = sorted((judge_stats.get("judges") or {}).keys())
     ensemble = judge_stats.get("ensemble") or {}
     calibration = judge_stats.get("calibration") or {}
     run = judge_stats.get("run") or {}
     completed_pairs = int(run.get("completed_pairs") or 0)
+    judge_calls = int(run.get("dispatched") or 0) + int(run.get("cache_hits") or 0)
+    # SPEC-NOTE: run #1 rendered "n/a — no pairs required judging" while 352
+    # judgment rows existed, because the reason was inferred from agreement being
+    # None. Agreement/alpha are legitimately None when judging DID occur but no
+    # pair collected ≥2 comparable verdicts (e.g. one judge abstained on every
+    # pair). "Whether judging occurred" is now read from the presence of judgment
+    # rows, never from the agreement value.
     agreement_percent = ensemble.get("raw_agreement_percent")
     krippendorff_alpha = ensemble.get("krippendorff_alpha")
     calibration_accuracy = calibration.get("accuracy")
@@ -617,18 +624,20 @@ def _judge_panel(judge_stats: dict[str, Any]) -> dict[str, Any]:
         "agreement_percent": agreement_percent,
         "agreement_reason": _judge_unavailable_reason(
             value=agreement_percent,
-            completed_pairs=completed_pairs,
+            judged=judged,
             judges=judges,
         ),
         "calibration_accuracy": calibration_accuracy,
         "calibration_accuracy_reason": (
             None if calibration_accuracy is not None else "no calibration set provided"
         ),
+        "completed_pairs": completed_pairs,
         "families": sorted({str(judge).split("/", 1)[0] for judge in judges}),
+        "judge_calls": judge_calls,
         "krippendorff_alpha": krippendorff_alpha,
         "krippendorff_alpha_reason": _judge_unavailable_reason(
             value=krippendorff_alpha,
-            completed_pairs=completed_pairs,
+            judged=judged,
             judges=judges,
         ),
         "models": judges,
@@ -639,16 +648,16 @@ def _judge_panel(judge_stats: dict[str, Any]) -> dict[str, Any]:
 def _judge_unavailable_reason(
     *,
     value: object,
-    completed_pairs: int,
+    judged: bool,
     judges: list[str],
 ) -> str | None:
     if value is not None:
         return None
-    if completed_pairs == 0:
+    if not judged:
         return "no pairs required judging"
     if len(judges) < 2:
-        return "alpha requires ≥2 judges"
-    return "no pairs required judging"
+        return "requires ≥2 judges with comparable verdicts"
+    return "no pair had ≥2 comparable judge verdicts"
 
 
 def _cost_latency_payload(

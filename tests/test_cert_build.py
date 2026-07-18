@@ -137,6 +137,83 @@ def test_model_generated_banned_language_is_sanitized(tmp_path: Path) -> None:
 FAKE_CLIENT_BANNER = "FAKE CLIENTS — NOT A CERTIFICATION"
 
 
+def _judgment_row(pair_id: str, judge: str, outcome: str | None, reason: str | None = None) -> dict:
+    return {"abstain_reason": reason, "judge": judge, "outcome": outcome, "pair_id": pair_id}
+
+
+def test_judge_panel_renders_agreement_when_judging_occurred(tmp_path: Path) -> None:
+    manifest_path, manifest, traces, run_dir = _write_inputs(tmp_path)
+    pair_id = str(traces[0].trace_id)
+    _write_jsonl(
+        run_dir / "judgments.jsonl",
+        [
+            _judgment_row(pair_id, "openai/j1", "worse_minor"),
+            _judgment_row(pair_id, "google/j2", "worse_minor"),
+        ],
+    )
+    _write_json(
+        run_dir / "judge_stats.json",
+        {
+            "ensemble": {"krippendorff_alpha": 1.0, "raw_agreement_percent": 100.0},
+            "judges": {"google/j2": {}, "openai/j1": {}},
+            "run": {"cache_hits": 0, "completed_pairs": 1, "dispatched": 4},
+        },
+    )
+
+    result = build_certificate(
+        manifest=manifest,
+        traces=traces,
+        run_dir=run_dir,
+        manifest_path=manifest_path,
+    )
+    render_report(result.cert, output_path=run_dir / "report.html")
+    panel = result.payload["judge_panel"]
+    report_text = (run_dir / "report.html").read_text(encoding="utf-8")
+
+    assert panel["agreement_percent"] == 100.0
+    assert panel["agreement_reason"] is None
+    assert panel["krippendorff_alpha"] == 1.0
+    assert panel["completed_pairs"] == 1
+    assert panel["judge_calls"] == 4
+    assert "no pairs required judging" not in report_text
+    assert "100.0%" in report_text
+
+
+def test_judge_panel_reason_is_honest_when_agreement_uncomputable(tmp_path: Path) -> None:
+    manifest_path, manifest, traces, run_dir = _write_inputs(tmp_path)
+    pair_id = str(traces[0].trace_id)
+    # Judging occurred (rows exist) but one judge abstained on every pair, so no
+    # pair collected two comparable verdicts and agreement is None.
+    _write_jsonl(
+        run_dir / "judgments.jsonl",
+        [
+            _judgment_row(pair_id, "openai/j1", "worse_minor"),
+            _judgment_row(pair_id, "google/j2", None, reason="parse_failure"),
+        ],
+    )
+    _write_json(
+        run_dir / "judge_stats.json",
+        {
+            "ensemble": {"krippendorff_alpha": None, "raw_agreement_percent": None},
+            "judges": {"google/j2": {}, "openai/j1": {}},
+            "run": {"cache_hits": 0, "completed_pairs": 1, "dispatched": 4},
+        },
+    )
+
+    result = build_certificate(
+        manifest=manifest,
+        traces=traces,
+        run_dir=run_dir,
+        manifest_path=manifest_path,
+    )
+    panel = result.payload["judge_panel"]
+
+    assert panel["agreement_percent"] is None
+    assert panel["agreement_reason"] == "no pair had ≥2 comparable judge verdicts"
+    assert panel["completed_pairs"] == 1
+    assert panel["judge_calls"] == 4
+
+
 def test_fake_run_certificate_is_watermarked_in_payload_and_report(tmp_path: Path) -> None:
     manifest_path, manifest, traces, run_dir = _write_inputs(tmp_path)
 
