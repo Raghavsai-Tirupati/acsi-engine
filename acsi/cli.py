@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import io
 import json
+import os
 import shutil
 from pathlib import Path
 from typing import Annotated
@@ -69,10 +70,11 @@ from acsi.patch import (
     select_patch_target,
     write_patch_report,
 )
-from acsi.preflight import PreflightReport, run_preflight
+from acsi.preflight import PreflightReport, collect_targets, run_preflight
 from acsi.publish import PublishError, publish_certificate
 from acsi.replay.artifacts import RunClock, build_run_manifest, write_run_manifest
 from acsi.replay.clients import FakeClient, LiveClient, RegressionRule
+from acsi.replay.routing import required_api_key_env
 from acsi.replay.runner import (
     ReplayAbortError,
     ReplayConfig,
@@ -248,6 +250,72 @@ def _confirm_replay(
     console.print(table)
     if not typer.confirm("Proceed with replay?"):
         raise typer.Exit(1)
+
+
+# SPEC-NOTE: the full-run preflight cost is an ESTIMATE printed before sampling,
+# so it is computed over the first `sampling.n` source traces as a proxy for the
+# eventual sample plan (token distributions are representative). The judge term
+# assumes every sampled pair is adjudicated by the full panel — an upper bound,
+# since judging only runs on beyond-noise pairs — so the printed figure never
+# understates the real spend.
+_JUDGE_OUTPUT_TOKENS_ESTIMATE = 128
+
+
+def _estimate_judge_panel_cost(
+    traces: list[TraceRecord],
+    manifest_model,
+    *,
+    fake: bool,
+) -> float:
+    panel = select_judge_panel(manifest_model)
+    total = 0.0
+    for trace in traces:
+        input_tokens = trace.response.usage.input_tokens if trace.response.usage else 0
+        output_tokens = estimated_output_tokens(trace)
+        # A judge reads the prompt plus both candidate/baseline responses and
+        # emits a short verdict.
+        judge_input_tokens = input_tokens + 2 * output_tokens
+        for spec in panel:
+            total += estimate_call_cost_usd(
+                spec.provider,
+                spec.model,
+                judge_input_tokens,
+                _JUDGE_OUTPUT_TOKENS_ESTIMATE,
+                fake=fake,
+            )
+    return total
+
+
+def _estimate_run_cost(
+    traces: list[TraceRecord],
+    manifest_model,
+    *,
+    fake: bool,
+) -> float:
+    n = manifest_model.sampling.n
+    plan = traces[:n] if len(traces) > n else traces
+    baseline = _estimate_replay_cost(
+        plan,
+        manifest_model.baseline,
+        manifest_model.sampling.k_baseline,
+        fake=fake,
+    )
+    candidate = _estimate_replay_cost(plan, manifest_model.candidate, 1, fake=fake)
+    judges = _estimate_judge_panel_cost(plan, manifest_model, fake=fake)
+    return baseline + candidate + judges
+
+
+def _missing_provider_keys(manifest_model) -> list[str]:
+    """Return the env var NAMES of any required provider credential that is unset.
+
+    Mirrors preflight: report by name only, never a secret value.
+    """
+    required: dict[str, str] = {}
+    for _role, provider, _model in collect_targets(manifest_model):
+        key_env = required_api_key_env(provider)
+        if key_env is not None:
+            required[provider] = key_env
+    return sorted({env for env in required.values() if not os.environ.get(env)})
 
 
 def _resume_command(manifest: Path, traces: Path, run_id: str) -> str:
@@ -656,10 +724,15 @@ def run(
         bool,
         typer.Option("--yes", help="Approve provider spend without prompting."),
     ] = False,
+    live: Annotated[
+        bool,
+        typer.Option(
+            "--live",
+            help="Use real providers (LiveClient/LiveJudge) instead of FakeClients.",
+        ),
+    ] = False,
     json_output: JsonOutputOption = False,
 ) -> None:
-    if not yes:
-        _fail("Pass --yes to approve the full run preflight.", json_output)
     try:
         manifest_model = load_workload_manifest(manifest)
         source_traces_path = traces or run_dir / "traces" / f"{manifest_model.workload}.jsonl"
@@ -667,15 +740,11 @@ def run(
         if not source_records:
             _fail(f"No valid traces found in {source_traces_path}.", json_output)
 
-        active_run_id = run_id or str(uuid4())
-        active_run_dir = run_dir / "runs" / active_run_id
-        active_run_dir.mkdir(parents=True, exist_ok=True)
-        run_path = active_run_dir / "run.json"
-        run_started_at, stages = _load_run_state(run_path, active_run_id)
-
+        estimated_cost = _estimate_run_cost(source_records, manifest_model, fake=not live)
         table = Table(title="ACSI Run Preflight")
         table.add_column("Metric")
         table.add_column("Value")
+        table.add_row("Mode", "LIVE" if live else "FAKE")
         table.add_row("Traces", str(len(source_records)))
         table.add_row("Sample target", str(manifest_model.sampling.n))
         table.add_row(
@@ -686,9 +755,33 @@ def run(
             "Candidate",
             f"{manifest_model.candidate.provider}/{manifest_model.candidate.model}",
         )
-        table.add_row("Estimated cost", "$0.000000 (fake clients)")
+        if live:
+            table.add_row("Estimated cost", f"${estimated_cost:.2f} (LIVE)")
+        else:
+            table.add_row("Estimated cost", "$0.000000 (fake clients)")
         if not json_output:
+            # Always show the price before demanding approval — never gate on an
+            # unseen cost.
             console.print(table)
+
+        if not yes:
+            _fail("Pass --yes to approve the full run preflight.", json_output)
+
+        if live:
+            missing = _missing_provider_keys(manifest_model)
+            if missing:
+                # Abort before any provider spend; name the env vars, never values.
+                _fail(
+                    "Missing required provider environment variables: "
+                    + ", ".join(missing),
+                    json_output,
+                )
+
+        active_run_id = run_id or str(uuid4())
+        active_run_dir = run_dir / "runs" / active_run_id
+        active_run_dir.mkdir(parents=True, exist_ok=True)
+        run_path = active_run_dir / "run.json"
+        run_started_at, stages = _load_run_state(run_path, active_run_id)
 
         if not _stage_finished(stages, "import-check"):
             _mark_stage(
@@ -765,7 +858,9 @@ def run(
                     sampled_records,
                     manifest_model.baseline,
                     manifest_model.sampling.k_baseline,
-                    client=FakeClient(seed=manifest_model.sampling.seed, noise=fake_noise),
+                    client=LiveClient()
+                    if live
+                    else FakeClient(seed=manifest_model.sampling.seed, noise=fake_noise),
                     store=store,
                     config=ReplayConfig(
                         run_id=active_run_id,
@@ -777,7 +872,7 @@ def run(
                     run_dir=active_run_dir,
                     manifest_path=manifest,
                     traces_path=sampled_path,
-                    endpoint="degraded" if degraded else "fake",
+                    endpoint="degraded" if degraded else ("live" if live else "fake"),
                     degraded=degraded,
                 )
             )
@@ -799,14 +894,18 @@ def run(
             )
 
         if not _stage_finished(stages, "replay"):
-            candidate_client = FakeClient(
-                seed=manifest_model.sampling.seed,
-                noise=fake_noise,
-                regressions=_candidate_regression_rules(
-                    sampled_records,
-                    broken_json_rate=inject_broken_json_rate,
-                    broken_json_token=inject_broken_json_token,
-                ),
+            candidate_client = (
+                LiveClient()
+                if live
+                else FakeClient(
+                    seed=manifest_model.sampling.seed,
+                    noise=fake_noise,
+                    regressions=_candidate_regression_rules(
+                        sampled_records,
+                        broken_json_rate=inject_broken_json_rate,
+                        broken_json_token=inject_broken_json_token,
+                    ),
+                )
             )
             clock = RunClock()
             replay_result = asyncio.run(
@@ -837,7 +936,7 @@ def run(
                 traces_path=sampled_path,
                 seed=manifest_model.sampling.seed,
                 provider=manifest_model.candidate.provider,
-                endpoint="fake",
+                endpoint="live" if live else "fake",
                 store=store,
                 result=replay_result,
                 wall_clock_seconds=clock.elapsed_seconds(),
@@ -890,7 +989,9 @@ def run(
             selected = select_for_judging(pairs, tau)
             panel = select_judge_panel(manifest_model)
             clients = {
-                judge_spec.model: FakeJudge(model=judge_spec.model)
+                judge_spec.model: LiveJudge.from_spec(judge_spec)
+                if live
+                else FakeJudge(model=judge_spec.model)
                 for judge_spec in panel
             }
             judge_result = run_pairwise_judging(
@@ -937,6 +1038,11 @@ def run(
                 n_sampled_pairs=len(sampled_records),
                 min_cluster_size=manifest_model.clustering.min_cluster_size,
             )
+            # SPEC-NOTE: --live wires live baseline/candidate clients and judges
+            # (the verdict-driving evidence). Cluster naming and patch proposal
+            # keep the deterministic Fake* helpers: there is no live namer/patcher,
+            # names never feed the verdict, and orchestrator patches are always
+            # emitted unaccepted (reason="not_validated_orchestrator").
             named, stats = name_clusters(
                 buckets,
                 namer=_fake_namer(),
@@ -998,6 +1104,7 @@ def run(
                 run_dir=active_run_dir,
                 manifest_path=manifest,
                 degraded=degraded,
+                client_mode="live" if live else "fake",
             )
             report_hash = render_report(
                 cert_result.cert,
