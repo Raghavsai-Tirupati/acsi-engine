@@ -31,9 +31,10 @@ from acsi.replay.clients import (
     CompletionClient,
     CompletionRequest,
     CompletionResponse,
+    PermanentError,
     ReplayClientError,
 )
-from acsi.replay.runner import estimate_call_cost_usd
+from acsi.replay.runner import ReplayAbortError, estimate_call_cost_usd
 from acsi.replay.store import ReplayStore, StoredCall
 from acsi.schemas import TraceRecord
 
@@ -423,17 +424,16 @@ def _call_with_parse_retry(
                     config,
                     on_attempt=on_attempt,
                 )
+            except PermanentError as exc:
+                if exc.run_level:
+                    # Provider-fatal (billing/quota/auth): abort the run rather
+                    # than silently abstaining every remaining judge call.
+                    raise ReplayAbortError(str(exc), status_code=exc.status_code) from exc
+                return _call_error_result(cache_hit, cost_usd, exc)
             except ReplayClientError as exc:
-                # Transient retries exhausted or a non-retryable provider error:
+                # Transient retries exhausted or another non-fatal provider error:
                 # abstain for this call rather than crashing the run.
-                return JudgeCallResult(
-                    parsed=None,
-                    parse_failed=False,
-                    cache_hit=cache_hit,
-                    dispatched=True,
-                    cost_usd=cost_usd,
-                    call_error=str(exc),
-                )
+                return _call_error_result(cache_hit, cost_usd, exc)
             actual_cost = _judge_call_cost(request, response, client)
             store.write_done(
                 run_id=config.run_id,
@@ -466,6 +466,17 @@ def _call_with_parse_retry(
         cache_hit=cache_hit,
         dispatched=not cache_hit,
         cost_usd=cost_usd,
+    )
+
+
+def _call_error_result(cache_hit: bool, cost_usd: float, exc: Exception) -> JudgeCallResult:
+    return JudgeCallResult(
+        parsed=None,
+        parse_failed=False,
+        cache_hit=cache_hit,
+        dispatched=True,
+        cost_usd=cost_usd,
+        call_error=str(exc),
     )
 
 

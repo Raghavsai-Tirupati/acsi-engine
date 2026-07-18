@@ -241,19 +241,58 @@ def _litellm_messages(request: CompletionRequest) -> list[dict[str, str]]:
     return messages
 
 
+# Substrings that mark a rejection as provider-fatal: the whole run cannot make
+# progress until the operator fixes billing/quota/account state. These are
+# billing/account phrases (not transient rate-limit wording), so a retryable
+# HTTP 429 "requests per minute" is NOT swept in here.
+_PROVIDER_FATAL_MARKERS: tuple[str, ...] = (
+    "credit balance",
+    "billing",
+    "plans & billing",
+    "purchase credits",
+    "insufficient_quota",
+    "insufficient quota",
+    "exceeded your current quota",
+    "hard limit",
+    "spending limit",
+    "spend cap",
+    "quota exceeded",
+    "account is not active",
+    "account has been",
+    "suspended",
+    "deactivated",
+    "payment required",
+)
+
+
+def _is_provider_fatal(status_code: int | None, message: str) -> bool:
+    if status_code in {401, 403}:
+        return True
+    lowered = message.lower()
+    return any(marker in lowered for marker in _PROVIDER_FATAL_MARKERS)
+
+
 def map_litellm_error(exc: Exception, model: str) -> ReplayClientError:
     status_code = getattr(exc, "status_code", None)
+    message = str(exc)
     retry_after = _retry_after_seconds(exc)
+    if _is_provider_fatal(status_code, message):
+        # Billing/quota/auth: fail the whole run rather than spending on doomed
+        # calls or, worse, letting a stage "complete" on rejected calls.
+        return PermanentError(
+            f"provider halted the run (HTTP {status_code}): {message}",
+            run_level=True,
+            status_code=status_code,
+        )
     if _is_timeout(exc) or status_code == 408:
         return _with_retry_after(TransientError(f"request timed out: {exc}"), retry_after)
     if status_code == 429:
-        return _with_retry_after(RateLimitError(str(exc)), retry_after)
+        return _with_retry_after(RateLimitError(message), retry_after)
     if status_code in {500, 502, 503, 504}:
-        return _with_retry_after(TransientError(str(exc)), retry_after)
-    if status_code in {401, 403, 404}:
-        message = retired_model_message(model) if status_code == 404 else str(exc)
-        return PermanentError(message, run_level=True, status_code=status_code)
-    return PermanentError(str(exc), run_level=False, status_code=status_code)
+        return _with_retry_after(TransientError(message), retry_after)
+    if status_code == 404:
+        return PermanentError(retired_model_message(model), run_level=True, status_code=404)
+    return PermanentError(message, run_level=False, status_code=status_code)
 
 
 def _with_retry_after(error: ReplayClientError, retry_after_s: float | None) -> ReplayClientError:
