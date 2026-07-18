@@ -6,6 +6,7 @@ import io
 import json
 import os
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
 from uuid import uuid4
@@ -72,7 +73,7 @@ from acsi.patch import (
 )
 from acsi.preflight import PreflightReport, collect_targets, run_preflight
 from acsi.publish import PublishError, publish_certificate
-from acsi.replay.artifacts import RunClock, build_run_manifest, write_run_manifest
+from acsi.replay.artifacts import RunClock, build_run_manifest, sha256_file, write_run_manifest
 from acsi.replay.clients import FakeClient, LiveClient, RegressionRule
 from acsi.replay.routing import required_api_key_env
 from acsi.replay.runner import (
@@ -523,6 +524,73 @@ def _write_jsonl(path: Path, rows: list[dict[str, object]]) -> str:
     return digest
 
 
+_PENDING_NEW = "__pending_new__"
+
+
+@dataclass(frozen=True)
+class _RunIdentity:
+    workload: str
+    config_hash: str
+    source_traces: str
+
+
+def _write_run_identity(path: Path, identity: _RunIdentity, run_started_at: str) -> None:
+    _write_json(
+        path,
+        {
+            "config_hash": identity.config_hash,
+            "run_started_at": run_started_at,
+            "source_traces": identity.source_traces,
+            "workload": identity.workload,
+        },
+    )
+
+
+def _resolve_run_id(
+    runs_dir: Path,
+    *,
+    run_id: str | None,
+    fresh: bool,
+    identity: _RunIdentity,
+) -> str:
+    if run_id is not None:
+        return run_id
+    if fresh:
+        return _PENDING_NEW
+    return _find_resumable_run(runs_dir, identity) or _PENDING_NEW
+
+
+def _find_resumable_run(runs_dir: Path, identity: _RunIdentity) -> str | None:
+    """Return the id of the most recent incomplete run matching this workload.
+
+    A run matches when its recorded manifest hash and source traces are identical
+    and its certificate stage has not completed. Resuming reuses the banked
+    baseline/candidate/judge checkpoints instead of paying for them again.
+    """
+    if not runs_dir.exists():
+        return None
+    candidates: list[tuple[str, str]] = []
+    for identity_path in sorted(runs_dir.glob("*/run_identity.json")):
+        try:
+            recorded = json.loads(identity_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if (
+            recorded.get("workload") != identity.workload
+            or recorded.get("config_hash") != identity.config_hash
+            or recorded.get("source_traces") != identity.source_traces
+        ):
+            continue
+        run_dir = identity_path.parent
+        _started, stages = _load_run_state(run_dir / "run.json", run_dir.name)
+        if _stage_finished(stages, "cert"):
+            continue
+        candidates.append((str(recorded.get("run_started_at") or ""), run_dir.name))
+    if not candidates:
+        return None
+    return max(candidates)[1]
+
+
 def _load_run_state(run_path: Path, run_id: str) -> tuple[str, dict[str, dict[str, object]]]:
     if run_path.exists():
         payload = json.loads(run_path.read_text(encoding="utf-8"))
@@ -742,6 +810,13 @@ def run(
             help="Use real providers (LiveClient/LiveJudge) instead of FakeClients.",
         ),
     ] = False,
+    fresh: Annotated[
+        bool,
+        typer.Option(
+            "--fresh",
+            help="Force a new run instead of resuming the most recent incomplete one.",
+        ),
+    ] = False,
     json_output: JsonOutputOption = False,
 ) -> None:
     try:
@@ -788,11 +863,31 @@ def run(
                     json_output,
                 )
 
-        active_run_id = run_id or str(uuid4())
+        config_hash = sha256_file(manifest)
+        identity = _RunIdentity(
+            workload=manifest_model.workload,
+            config_hash=config_hash,
+            source_traces=str(source_traces_path),
+        )
+        active_run_id = _resolve_run_id(
+            run_dir / "runs",
+            run_id=run_id,
+            fresh=fresh,
+            identity=identity,
+        )
+        if run_id is None and not fresh and active_run_id != _PENDING_NEW and not json_output:
+            console.print(
+                f"Resuming incomplete run {active_run_id} for workload "
+                f"{manifest_model.workload}.",
+                style="dim",
+            )
+        if active_run_id == _PENDING_NEW:
+            active_run_id = str(uuid4())
         active_run_dir = run_dir / "runs" / active_run_id
         active_run_dir.mkdir(parents=True, exist_ok=True)
         run_path = active_run_dir / "run.json"
         run_started_at, stages = _load_run_state(run_path, active_run_id)
+        _write_run_identity(active_run_dir / "run_identity.json", identity, run_started_at)
 
         if not _stage_finished(stages, "import-check"):
             _mark_stage(
