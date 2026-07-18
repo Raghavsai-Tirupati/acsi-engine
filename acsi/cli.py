@@ -322,7 +322,8 @@ def _missing_provider_keys(manifest_model) -> list[str]:
 def _judge_progress(message: str) -> None:
     # Progress goes to stderr so it never corrupts --json stdout. One line per
     # judged pair (plus a phase summary) means silence always signals idle.
-    err_console.print(message, style="dim")
+    # markup=False so the "[judge]" segment renders literally, not as rich markup.
+    err_console.print(message, style="dim", markup=False)
 
 
 def _resume_command(manifest: Path, traces: Path, run_id: str) -> str:
