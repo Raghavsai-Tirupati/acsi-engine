@@ -74,13 +74,15 @@ def stable_utc_now() -> str:
 
 def aggregate_judgment_rows(
     judgment_rows: list[dict[str, Any]],
+    *,
+    min_valid: int = 1,
 ) -> dict[str, CandidateOutcome]:
     votes: dict[str, dict[str, CandidateOutcome | None]] = {}
     for row in judgment_rows:
         outcome = row.get("outcome")
         parsed_outcome = None if outcome is None else str(outcome)
         votes.setdefault(str(row["pair_id"]), {})[str(row["judge"])] = parsed_outcome  # type: ignore[assignment]
-    return aggregate_pair_outcomes(votes)
+    return aggregate_pair_outcomes(votes, min_valid=min_valid)
 
 
 def latest_overrides(override_rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:

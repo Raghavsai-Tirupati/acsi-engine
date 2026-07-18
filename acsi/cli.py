@@ -318,6 +318,12 @@ def _missing_provider_keys(manifest_model) -> list[str]:
     return sorted({env for env in required.values() if not os.environ.get(env)})
 
 
+def _judge_progress(message: str) -> None:
+    # Progress goes to stderr so it never corrupts --json stdout. One line per
+    # judged pair (plus a phase summary) means silence always signals idle.
+    err_console.print(message, style="dim")
+
+
 def _resume_command(manifest: Path, traces: Path, run_id: str) -> str:
     return f"acsi replay --manifest {manifest} --traces {traces} --run-id {run_id} --yes"
 
@@ -657,9 +663,11 @@ def _candidate_records_for_clustering(
     candidate_calls: list[StoredCall],
     judgment_rows: list[dict[str, object]],
     assertion_failures: dict[str, list[AssertionFailure]],
+    *,
+    min_judges: int = 1,
 ) -> list[CandidatePairRecord]:
     votes = _votes_from_judgments(judgment_rows)
-    outcomes = aggregate_pair_outcomes(votes)
+    outcomes = aggregate_pair_outcomes(votes, min_valid=min_judges)
     baseline_text = _text_by_trace(baseline_calls)
     candidate_text = _text_by_trace(candidate_calls)
     records: list[CandidatePairRecord] = []
@@ -991,8 +999,9 @@ def run(
             )
             selected = select_for_judging(pairs, tau)
             panel = select_judge_panel(manifest_model)
+            call_timeout_s = manifest_model.judging.call_timeout_s
             clients = {
-                judge_spec.model: LiveJudge.from_spec(judge_spec)
+                judge_spec.model: LiveJudge.from_spec(judge_spec, timeout_s=call_timeout_s)
                 if live
                 else FakeJudge(model=judge_spec.model)
                 for judge_spec in panel
@@ -1005,6 +1014,8 @@ def run(
                     run_id=active_run_id,
                     seed=manifest_model.sampling.seed,
                     interrupt_after_dispatches=interrupt_after_judge_dispatches,
+                    call_timeout_s=call_timeout_s,
+                    progress=None if json_output else _judge_progress,
                 ),
             )
             judgments_hash, stats_hash = write_judge_artifacts(
@@ -1034,6 +1045,7 @@ def run(
                 candidate_calls,
                 judgments,
                 assertion_failures,
+                min_judges=manifest_model.judging.min_judges,
             )
             regressions = build_regression_set(records)
             buckets = cluster_regressions(
@@ -1620,6 +1632,7 @@ def cluster(
             candidate_calls,
             judgments,
             assertion_failures,
+            min_judges=manifest_model.judging.min_judges,
         )
         regressions = build_regression_set(records)
         buckets = cluster_regressions(
@@ -1761,17 +1774,23 @@ def judge(
             return
 
         panel = select_judge_panel(manifest_model)
+        call_timeout_s = manifest_model.judging.call_timeout_s
         clients = {
             judge_spec.model: FakeJudge(model=judge_spec.model)
             if fake
-            else LiveJudge.from_spec(judge_spec)
+            else LiveJudge.from_spec(judge_spec, timeout_s=call_timeout_s)
             for judge_spec in panel
         }
         result = run_pairwise_judging(
             selected,
             clients,
             store=ReplayStore(active_run_dir / "replay.sqlite"),
-            config=JudgeRunConfig(run_id=run_id, seed=manifest_model.sampling.seed),
+            config=JudgeRunConfig(
+                run_id=run_id,
+                seed=manifest_model.sampling.seed,
+                call_timeout_s=call_timeout_s,
+                progress=None if json_output else _judge_progress,
+            ),
         )
         calibration = None
         if calibration_csv is not None:

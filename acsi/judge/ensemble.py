@@ -20,6 +20,7 @@ class JudgeAccumulator:
     abstentions: int = 0
     parse_failures: int = 0
     position_inconsistencies: int = 0
+    call_errors: int = 0
     pairs_seen: int = 0
 
     @property
@@ -29,9 +30,20 @@ class JudgeAccumulator:
         return self.position_inconsistencies / self.pairs_seen
 
 
-def majority_outcome(votes: list[CandidateOutcome]) -> CandidateOutcome:
+def majority_outcome(
+    votes: list[CandidateOutcome],
+    *,
+    min_valid: int = 1,
+) -> CandidateOutcome:
+    # SPEC-NOTE: the panel floor is capped by the number of judges that actually
+    # participated (votes present). A pair falls to "unresolved" only when a judge
+    # that WAS asked abstained/errored, dropping valid verdicts below the floor —
+    # e.g. one of two judges exhausts retries. Pairs seen by a single judge (or
+    # min_valid=1, the default) keep the pre-existing single-vote behavior, so no
+    # healthy run changes.
+    floor = max(1, min(min_valid, len(votes)))
     eligible = [vote for vote in votes if vote != "unresolved"]
-    if not eligible:
+    if len(eligible) < floor:
         return "unresolved"
     counts = Counter(eligible)
     top_count = max(counts.values())
@@ -41,6 +53,8 @@ def majority_outcome(votes: list[CandidateOutcome]) -> CandidateOutcome:
 
 def aggregate_pair_outcomes(
     votes_by_pair: dict[str, dict[str, CandidateOutcome | None]],
+    *,
+    min_valid: int = 1,
 ) -> dict[str, CandidateOutcome]:
     outcomes: dict[str, CandidateOutcome] = {}
     for pair_id in sorted(votes_by_pair):
@@ -48,7 +62,8 @@ def aggregate_pair_outcomes(
             [
                 vote if vote is not None else "unresolved"
                 for vote in votes_by_pair[pair_id].values()
-            ]
+            ],
+            min_valid=min_valid,
         )
     return outcomes
 
@@ -121,6 +136,7 @@ def summarize_judge_stats(
         "judges": {
             judge: {
                 "abstentions": acc.abstentions,
+                "call_errors": acc.call_errors,
                 "parse_failures": acc.parse_failures,
                 "position_inconsistency_rate": round(acc.position_inconsistency_rate, 12),
                 "position_inconsistencies": acc.position_inconsistencies,

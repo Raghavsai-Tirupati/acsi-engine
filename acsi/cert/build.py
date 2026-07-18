@@ -28,6 +28,7 @@ from acsi.overrides import (
     aggregate_judgment_rows,
     apply_overrides_to_judgments,
     human_overrides_payload,
+    latest_overrides,
     read_overrides,
 )
 from acsi.replay.artifacts import sha256_file
@@ -95,12 +96,22 @@ def build_certificate(
     candidate_calls = _read_jsonl(_first_existing([run_dir / "candidate" / "responses.jsonl"]))
 
     n = len(traces)
-    candidate_ci = _candidate_regression_ci(
+    # SPEC-NOTE: reclassify pairs below the panel floor to "unresolved" so a lone
+    # surviving judge cannot decide a pair when min_judges was required (run #1's
+    # judge-error fragility). Human overrides are authoritative and bypass the
+    # floor — they are overlaid after aggregation.
+    judge_outcomes = aggregate_judgment_rows(
         effective_judgment_rows,
+        min_valid=manifest.judging.min_judges,
+    )
+    for pair_id, override in latest_overrides(override_rows).items():
+        judge_outcomes[str(pair_id)] = str(override["to_outcome"])
+    candidate_ci = _candidate_regression_ci(
+        judge_outcomes,
         traces,
         manifest.sampling.seed,
     )
-    regressed_pairs = _regressed_pairs(assertion_rows, effective_judgment_rows, n=len(traces))
+    regressed_pairs = _regressed_pairs(assertion_rows, judge_outcomes, n=len(traces))
     noise_ci = _noise_floor_ci(noise_floor)
     degraded_mode = degraded or bool(noise_floor.get("degraded")) or noise_ci is None
     critical_failures = _critical_failure_count(assertion_rows)
@@ -131,7 +142,7 @@ def build_certificate(
     critical_clusters = _critical_clusters(
         clusters_payload,
         assertion_rows,
-        effective_judgment_rows,
+        judge_outcomes,
         n=n,
     )
     criterion_c = {
@@ -339,13 +350,12 @@ def _public_key_b64(public_key: Ed25519PublicKey) -> str:
 
 
 def _candidate_regression_ci(
-    judgment_rows: list[dict[str, Any]],
+    judge_outcomes: dict[str, Any],
     traces: list[TraceRecord],
     seed: int,
 ) -> dict[str, float]:
-    outcomes = aggregate_judgment_rows(judgment_rows)
     indicators = [
-        float(outcomes.get(str(trace.trace_id), "equivalent") in REGRESSION_OUTCOMES)
+        float(judge_outcomes.get(str(trace.trace_id), "equivalent") in REGRESSION_OUTCOMES)
         for trace in traces
     ]
     ci = percentile_bootstrap_ci(indicators or [0.0], seed=seed)
@@ -354,7 +364,7 @@ def _candidate_regression_ci(
 
 def _regressed_pairs(
     assertion_rows: list[dict[str, Any]],
-    judgment_rows: list[dict[str, Any]],
+    judge_outcomes: dict[str, Any],
     *,
     n: int,
 ) -> dict[str, Any]:
@@ -365,10 +375,9 @@ def _regressed_pairs(
         and row.get("baseline_passed") is True
         and row.get("candidate_passed") is False
     }
-    outcomes = aggregate_judgment_rows(judgment_rows)
     judge_pairs = {
         pair_id
-        for pair_id, outcome in outcomes.items()
+        for pair_id, outcome in judge_outcomes.items()
         if outcome in REGRESSION_OUTCOMES
     }
     both = assertion_pairs & judge_pairs
@@ -389,7 +398,7 @@ def _regressed_pairs(
 def _critical_clusters(
     clusters_payload: dict[str, Any],
     assertion_rows: list[dict[str, Any]],
-    judgment_rows: list[dict[str, Any]],
+    judge_outcomes: dict[str, Any],
     *,
     n: int,
 ) -> list[dict[str, Any]]:
@@ -400,7 +409,6 @@ def _critical_clusters(
         and row.get("baseline_passed") is True
         and row.get("candidate_passed") is False
     }
-    judge_outcomes = aggregate_judgment_rows(judgment_rows)
     active_critical_pairs = {
         pair_id
         for pair_id, outcome in judge_outcomes.items()

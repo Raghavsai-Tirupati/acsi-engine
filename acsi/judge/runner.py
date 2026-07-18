@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from random import Random
 from typing import Literal
 
 from acsi.diff.deterministic import DiffResponse
@@ -24,7 +27,12 @@ from acsi.judge.rubric import (
     render_classifier_rubric,
     render_pairwise_rubric,
 )
-from acsi.replay.clients import CompletionClient, CompletionRequest, CompletionResponse
+from acsi.replay.clients import (
+    CompletionClient,
+    CompletionRequest,
+    CompletionResponse,
+    ReplayClientError,
+)
 from acsi.replay.runner import estimate_call_cost_usd
 from acsi.replay.store import ReplayStore, StoredCall
 from acsi.schemas import TraceRecord
@@ -54,6 +62,7 @@ class JudgeCallResult:
     cache_hit: bool
     dispatched: bool
     cost_usd: float
+    call_error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -61,6 +70,12 @@ class JudgeRunConfig:
     run_id: str
     seed: int = 42
     interrupt_after_dispatches: int | None = None
+    call_timeout_s: float = 120.0
+    max_attempts: int = 4
+    base_backoff_s: float = 2.0
+    max_retry_after_s: float = 60.0
+    sleep: Callable[[float], None] = time.sleep
+    progress: Callable[[str], None] | None = None
 
 
 @dataclass
@@ -160,12 +175,19 @@ def run_pairwise_judging(
     budget = DispatchBudget(config.interrupt_after_dispatches)
     cache_hits = 0
     cost_usd = 0.0
+    call_errors = 0
 
-    for pair in sorted(pairs, key=lambda item: item.pair_id):
+    ordered_pairs = sorted(pairs, key=lambda item: item.pair_id)
+    total = len(ordered_pairs)
+    for index, pair in enumerate(ordered_pairs, start=1):
         for judge in sorted(judge_clients):
             client = judge_clients[judge]
             accumulator = accumulators[judge]
             accumulator.pairs_seen += 1
+
+            def report(attempt: int, judge: str = judge, index: int = index) -> None:
+                _emit_progress(config, f"judging pair {index}/{total} [{judge}] attempt {attempt}")
+
             left = _judge_pair_ordering(
                 pair,
                 judge,
@@ -174,6 +196,7 @@ def run_pairwise_judging(
                 config=config,
                 ordering="candidate_a",
                 budget=budget,
+                on_attempt=report,
             )
             right = _judge_pair_ordering(
                 pair,
@@ -183,11 +206,20 @@ def run_pairwise_judging(
                 config=config,
                 ordering="candidate_b",
                 budget=budget,
+                on_attempt=report,
             )
             cache_hits += int(left.cache_hit) + int(right.cache_hit)
             cost_usd += left.cost_usd + right.cost_usd
             outcome, reason = _combine_orderings(left, right)
-            if reason == "parse_failure":
+            if reason == "judge_error":
+                # SPEC-NOTE: a judge whose call exhausts transient retries abstains
+                # (records a judge_error row) instead of aborting the whole run.
+                # Its vote is None; downstream min_judges reclassifies pairs that
+                # then fall below the panel floor to "unresolved".
+                accumulator.call_errors += 1
+                accumulator.abstentions += 1
+                call_errors += 1
+            elif reason == "parse_failure":
                 accumulator.parse_failures += 1
                 accumulator.abstentions += 1
             elif reason == "position_inconsistency":
@@ -201,6 +233,7 @@ def run_pairwise_judging(
             judgments.append(
                 {
                     "abstain_reason": reason,
+                    "error": left.call_error or right.call_error,
                     "judge": judge,
                     "outcome": outcome,
                     "pair_id": pair.pair_id,
@@ -208,6 +241,11 @@ def run_pairwise_judging(
             )
 
     stats = summarize_judge_stats(accumulators, votes_by_pair)
+    _emit_progress(
+        config,
+        f"judged {total} pairs; {budget.dispatched} calls, {call_errors} judge errors, "
+        f"{sum(acc.parse_failures for acc in accumulators.values())} parse failures",
+    )
     return JudgeRunResult(
         judgments=judgments,
         stats=stats,
@@ -217,6 +255,11 @@ def run_pairwise_judging(
         parse_failures=sum(acc.parse_failures for acc in accumulators.values()),
         cost_usd=cost_usd,
     )
+
+
+def _emit_progress(config: JudgeRunConfig, message: str) -> None:
+    if config.progress is not None:
+        config.progress(message)
 
 
 def run_classifier_assertion(
@@ -311,6 +354,7 @@ def _judge_pair_ordering(
     config: JudgeRunConfig,
     ordering: Literal["candidate_a", "candidate_b"],
     budget: DispatchBudget,
+    on_attempt: Callable[[int], None] | None = None,
 ) -> JudgeCallResult:
     if ordering == "candidate_a":
         response_a = pair.candidate.text or ""
@@ -333,6 +377,7 @@ def _judge_pair_ordering(
         },
         parser=parse_pairwise_judgment,
         budget=budget,
+        on_attempt=on_attempt,
     )
 
 
@@ -347,6 +392,7 @@ def _call_with_parse_retry(
     params: dict[str, object],
     parser,
     budget: DispatchBudget,
+    on_attempt: Callable[[int], None] | None = None,
 ) -> JudgeCallResult:
     cache_hit = False
     cost_usd = 0.0
@@ -370,7 +416,24 @@ def _call_with_parse_retry(
                 params={**params, "attempt": attempt},
                 sample_index=attempt,
             )
-            response = client.complete(request)
+            try:
+                response = _complete_with_transient_retry(
+                    client,
+                    request,
+                    config,
+                    on_attempt=on_attempt,
+                )
+            except ReplayClientError as exc:
+                # Transient retries exhausted or a non-retryable provider error:
+                # abstain for this call rather than crashing the run.
+                return JudgeCallResult(
+                    parsed=None,
+                    parse_failed=False,
+                    cache_hit=cache_hit,
+                    dispatched=True,
+                    cost_usd=cost_usd,
+                    call_error=str(exc),
+                )
             actual_cost = _judge_call_cost(request, response, client)
             store.write_done(
                 run_id=config.run_id,
@@ -406,10 +469,52 @@ def _call_with_parse_retry(
     )
 
 
+def _complete_with_transient_retry(
+    client: CompletionClient,
+    request: CompletionRequest,
+    config: JudgeRunConfig,
+    *,
+    on_attempt: Callable[[int], None] | None = None,
+) -> CompletionResponse:
+    """Call the judge client, retrying only transient failures (429/5xx/timeout).
+
+    Provider retry-after hints are honored up to max_retry_after_s; otherwise
+    exponential backoff with jitter. Non-transient errors (400/401/404) raise on
+    the first attempt.
+    """
+    last_error: ReplayClientError | None = None
+    for attempt in range(1, config.max_attempts + 1):
+        if on_attempt is not None:
+            on_attempt(attempt)
+        try:
+            return client.complete(request)
+        except ReplayClientError as exc:
+            last_error = exc
+            if not getattr(exc, "retryable", False) or attempt >= config.max_attempts:
+                raise
+            config.sleep(_retry_delay_seconds(exc, config, attempt))
+    assert last_error is not None
+    raise last_error
+
+
+def _retry_delay_seconds(
+    exc: ReplayClientError,
+    config: JudgeRunConfig,
+    attempt: int,
+) -> float:
+    hint = getattr(exc, "retry_after_s", None)
+    if hint is not None:
+        return min(float(hint), config.max_retry_after_s)
+    jitter = Random(f"{config.seed}:{attempt}").uniform(0, config.base_backoff_s)
+    return config.base_backoff_s * (2 ** (attempt - 1)) + jitter
+
+
 def _combine_orderings(
     left: JudgeCallResult,
     right: JudgeCallResult,
 ) -> tuple[CandidateOutcome | None, str | None]:
+    if left.call_error or right.call_error:
+        return None, "judge_error"
     if left.parse_failed or right.parse_failed or left.parsed is None or right.parsed is None:
         return None, "parse_failure"
     left_outcome = map_position_verdict(left.parsed, candidate_position="a")

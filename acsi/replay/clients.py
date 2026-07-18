@@ -5,6 +5,7 @@ import json
 import os
 import time
 from collections.abc import Callable, Sequence
+from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -13,6 +14,8 @@ from acsi.replay.routing import provider_route
 
 class ReplayClientError(RuntimeError):
     retryable = False
+    # Provider-supplied hint (Retry-After / RetryInfo), in seconds, when present.
+    retry_after_s: float | None = None
 
 
 class RateLimitError(ReplayClientError):
@@ -173,7 +176,7 @@ class LiveClient:
         try:
             raw_response = litellm.completion(**completion_kwargs)
         except Exception as exc:
-            raise _map_litellm_error(exc, request.model) from exc
+            raise map_litellm_error(exc, request.model) from exc
 
         latency_ms = int((time.perf_counter() - started) * 1000)
         choice = raw_response.choices[0]
@@ -238,13 +241,49 @@ def _litellm_messages(request: CompletionRequest) -> list[dict[str, str]]:
     return messages
 
 
-def _map_litellm_error(exc: Exception, model: str) -> ReplayClientError:
+def map_litellm_error(exc: Exception, model: str) -> ReplayClientError:
     status_code = getattr(exc, "status_code", None)
+    retry_after = _retry_after_seconds(exc)
+    if _is_timeout(exc) or status_code == 408:
+        return _with_retry_after(TransientError(f"request timed out: {exc}"), retry_after)
     if status_code == 429:
-        return RateLimitError(str(exc))
+        return _with_retry_after(RateLimitError(str(exc)), retry_after)
     if status_code in {500, 502, 503, 504}:
-        return TransientError(str(exc))
+        return _with_retry_after(TransientError(str(exc)), retry_after)
     if status_code in {401, 403, 404}:
         message = retired_model_message(model) if status_code == 404 else str(exc)
         return PermanentError(message, run_level=True, status_code=status_code)
     return PermanentError(str(exc), run_level=False, status_code=status_code)
+
+
+def _with_retry_after(error: ReplayClientError, retry_after_s: float | None) -> ReplayClientError:
+    error.retry_after_s = retry_after_s
+    return error
+
+
+def _is_timeout(exc: Exception) -> bool:
+    return type(exc).__name__ in {"Timeout", "APITimeoutError"}
+
+
+def _retry_after_seconds(exc: Exception) -> float | None:
+    """Best-effort extraction of a provider retry hint (seconds).
+
+    Reads an explicit `retry_after` attribute or an HTTP `Retry-After` header.
+    Only integer-second forms are honored; HTTP-date forms are ignored.
+    """
+    direct = getattr(exc, "retry_after", None)
+    if isinstance(direct, int | float):
+        return float(direct)
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None)
+    if headers is None:
+        return None
+    raw = None
+    with suppress(AttributeError, TypeError):
+        raw = headers.get("retry-after") or headers.get("Retry-After")
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None

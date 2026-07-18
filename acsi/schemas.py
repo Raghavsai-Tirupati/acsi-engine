@@ -131,6 +131,7 @@ class JudgingConfig(StrictModel):
     families_allowed: list[str]
     min_judges: int = Field(ge=1)
     judges: list[JudgeModelConfig] | None = None
+    call_timeout_s: float = Field(default=120.0, gt=0)
 
 
 class ThresholdConfig(StrictModel):

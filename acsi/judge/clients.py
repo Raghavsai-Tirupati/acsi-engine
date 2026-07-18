@@ -12,6 +12,7 @@ from acsi.replay.clients import (
     CompletionRequest,
     CompletionResponse,
     PermanentError,
+    map_litellm_error,
     plausible_token_count,
 )
 from acsi.replay.routing import provider_route
@@ -119,13 +120,22 @@ class FakeJudge:
 
 
 class LiveJudge:
-    def __init__(self, litellm_model: str, *, api_base: str | None = None) -> None:
+    DEFAULT_TIMEOUT_S = 120.0
+
+    def __init__(
+        self,
+        litellm_model: str,
+        *,
+        api_base: str | None = None,
+        timeout_s: float = DEFAULT_TIMEOUT_S,
+    ) -> None:
         self.litellm_model = litellm_model
         self.api_base = api_base
+        self.timeout_s = timeout_s
 
     @classmethod
-    def from_spec(cls, spec: JudgeSpec) -> LiveJudge:
-        return cls(spec.litellm_model, api_base=spec.api_base)
+    def from_spec(cls, spec: JudgeSpec, *, timeout_s: float = DEFAULT_TIMEOUT_S) -> LiveJudge:
+        return cls(spec.litellm_model, api_base=spec.api_base, timeout_s=timeout_s)
 
     def complete(self, request: CompletionRequest) -> CompletionResponse:
         try:
@@ -139,14 +149,17 @@ class LiveJudge:
             ) from exc
 
         started = time.perf_counter()
-        kwargs: dict[str, str] = {}
+        kwargs: dict[str, object] = {"timeout": self.timeout_s}
         if self.api_base:
             kwargs["api_base"] = self.api_base
-        raw_response = litellm.completion(
-            model=self.litellm_model,
-            messages=[{"role": "user", "content": request.prompt_text}],
-            **kwargs,
-        )
+        try:
+            raw_response = litellm.completion(
+                model=self.litellm_model,
+                messages=[{"role": "user", "content": request.prompt_text}],
+                **kwargs,
+            )
+        except Exception as exc:
+            raise map_litellm_error(exc, self.litellm_model) from exc
         latency_ms = int((time.perf_counter() - started) * 1000)
         choice = raw_response.choices[0]
         usage = getattr(raw_response, "usage", None)
