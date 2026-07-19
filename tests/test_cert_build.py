@@ -281,6 +281,49 @@ def test_unresolved_is_separated_from_judge_regression_and_health_shown(tmp_path
     assert "could not decide" in report_text
 
 
+def test_judge_health_context_line_renders_only_when_true(tmp_path: Path) -> None:
+    manifest_path, manifest, traces, run_dir = _write_inputs(tmp_path)
+    resolved, unresolved_pair = str(traces[0].trace_id), str(traces[1].trace_id)
+    # A resolved candidate_better pair and an unresolved pair: no resolved worse,
+    # but the panel disagreed (low agreement/alpha).
+    _write_jsonl(
+        run_dir / "judgments.jsonl",
+        [
+            _judgment_row(resolved, "openai/j", "candidate_better"),
+            _judgment_row(unresolved_pair, "openai/j", "unresolved"),
+        ],
+    )
+    stats = {
+        "ensemble": {"krippendorff_alpha": -0.19, "raw_agreement_percent": 44.7},
+        "judges": {"openai/j": {"verdict_counts": {"candidate_better": 1}}},
+        "run": {"completed_pairs": 2, "dispatched": 8},
+    }
+    _write_json(run_dir / "judge_stats.json", stats)
+
+    result = build_certificate(
+        manifest=manifest, traces=traces, run_dir=run_dir, manifest_path=manifest_path
+    )
+    render_report(result.cert, output_path=run_dir / "report.html")
+    report_text = (run_dir / "report.html").read_text(encoding="utf-8")
+
+    context = result.payload["judge_health"]["context"]
+    assert context == (
+        "Judges disagreed on better-vs-equivalent grading; "
+        "no judge found the candidate worse on any resolved pair."
+    )
+    assert context in report_text
+
+    # One RESOLVED worse verdict suppresses the line.
+    _write_jsonl(
+        run_dir / "judgments.jsonl",
+        [_judgment_row(resolved, "openai/j", "worse_minor")],
+    )
+    worse = build_certificate(
+        manifest=manifest, traces=traces, run_dir=run_dir, manifest_path=manifest_path
+    )
+    assert worse.payload["judge_health"]["context"] is None
+
+
 def test_unresolved_taxonomy_is_consistent_across_headline_and_criterion(tmp_path: Path) -> None:
     # Reproduces run 7f0978f5 in miniature: an unresolved pair that ALSO fails an
     # assertion (the 62-pair overlap) must not produce two different unresolved

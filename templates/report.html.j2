@@ -199,6 +199,9 @@
           <tr><th>Calibration</th><td>{% if payload.judge_panel.calibration_accuracy is not none %}{{ payload.judge_panel.calibration_accuracy|pct }}{% else %}n/a — {{ payload.judge_panel.calibration_accuracy_reason }}{% endif %}</td></tr>
         </tbody>
       </table>
+      {% if payload.judge_health.context %}
+      <p class="small muted">{{ payload.judge_health.context }}</p>
+      {% endif %}
 
       <h2>Clusters And Patches</h2>
       {% for cluster in payload.clusters %}

@@ -230,7 +230,7 @@ def build_certificate(
         "delta": _delta_ci(candidate_ci, noise_ci),
         "engine_version": __version__,
         "human_overrides": human_overrides,
-        "judge_health": _judge_health(judge_stats),
+        "judge_health": _judge_health(judge_stats, judge_outcomes),
         "judge_panel": _judge_panel(judge_stats, judged=bool(judgment_rows)),
         "manifest": {
             "baseline": manifest.baseline.model_dump(mode="json"),
@@ -720,7 +720,7 @@ def _zero_event_sentence(n: int) -> str:
     )
 
 
-def _judge_health(judge_stats: dict[str, Any]) -> dict[str, Any]:
+def _judge_health(judge_stats: dict[str, Any], judge_outcomes: dict[str, Any]) -> dict[str, Any]:
     """Panel-wide reliability so a collapsed judge layer is visible on the cert.
 
     Every (pair, judge) evaluation either yields a valid verdict or abstains
@@ -744,6 +744,7 @@ def _judge_health(judge_stats: dict[str, Any]) -> dict[str, Any]:
     return {
         "abstentions": abstentions,
         "call_errors": call_errors,
+        "context": _judge_health_context(judge_stats, judge_outcomes),
         "evaluations": evaluations,
         "parse_failure_rate": _rate(parse_failures),
         "parse_failures": parse_failures,
@@ -752,6 +753,42 @@ def _judge_health(judge_stats: dict[str, Any]) -> dict[str, Any]:
         "valid_verdict_rate": _rate(valid),
         "valid_verdicts": valid,
     }
+
+
+def _judge_health_context(
+    judge_stats: dict[str, Any],
+    judge_outcomes: dict[str, Any],
+) -> str | None:
+    """One honest sentence when the panel's disagreement is entirely non-harm.
+
+    Rendered only when TRUE from the data the cert actually uses (the min_judges
+    outcomes, not the run-time min_valid=1 stats — run 7f0978f5 shows 5 worse
+    there but 0 at the panel floor): judging occurred, no pair the panel RESOLVED
+    is worse, yet the judges disagreed (alpha -0.19, agreement 44.7%). A single
+    resolved worse verdict suppresses the line.
+    """
+    if not judge_outcomes:
+        return None
+    resolved_worse = sum(
+        1 for outcome in judge_outcomes.values() if outcome in {"worse_minor", "worse_critical"}
+    )
+    if resolved_worse > 0:
+        return None
+    unresolved = sum(1 for outcome in judge_outcomes.values() if outcome == "unresolved")
+    ensemble = judge_stats.get("ensemble") or {}
+    agreement = ensemble.get("raw_agreement_percent")
+    alpha = ensemble.get("krippendorff_alpha")
+    disagreement = (
+        unresolved > 0
+        or (agreement is not None and agreement < 100.0)
+        or (alpha is not None and alpha < 1.0)
+    )
+    if not disagreement:
+        return None
+    return (
+        "Judges disagreed on better-vs-equivalent grading; "
+        "no judge found the candidate worse on any resolved pair."
+    )
 
 
 def _judge_panel(judge_stats: dict[str, Any], *, judged: bool) -> dict[str, Any]:
