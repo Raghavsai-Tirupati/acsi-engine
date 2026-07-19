@@ -37,9 +37,17 @@
         <p>
           {{ payload.regressed_pairs.count }}/{{ payload.coverage.n }} sampled pairs regressed
           ({{ payload.regressed_pairs.rate|pct }}) — {{ payload.regressed_pairs.by_source.assertion }}
-          by assertion, {{ payload.regressed_pairs.by_source.judge }} by judge,
+          by assertion, {{ payload.regressed_pairs.by_source.judge }} by judge verdict,
           {{ payload.regressed_pairs.by_source.both }} by both.
         </p>
+        {% if payload.regressed_pairs.unresolved %}
+        <p>
+          {{ payload.regressed_pairs.unresolved }}/{{ payload.coverage.n }} pairs unresolved
+          ({{ payload.regressed_pairs.unresolved_rate|pct }}) — the panel could not reach enough
+          valid verdicts. Counted conservatively toward the verdict, not as judge-flagged
+          regressions.
+        </p>
+        {% endif %}
         {% if payload.coverage.zero_event_bound_sentence %}
         <p>{{ payload.coverage.zero_event_bound_sentence }}</p>
         {% endif %}
@@ -182,6 +190,9 @@
           <tr><th>Order swap</th><td>{{ payload.judge_panel.order_swap }}</td></tr>
           <tr><th>Pairs judged</th><td>{{ payload.judge_panel.completed_pairs }}</td></tr>
           <tr><th>Judge calls</th><td>{{ payload.judge_panel.judge_calls }}</td></tr>
+          <tr><th>Valid-verdict rate</th><td>{% if payload.judge_health.valid_verdict_rate is not none %}{{ payload.judge_health.valid_verdict_rate|pct }} ({{ payload.judge_health.valid_verdicts }}/{{ payload.judge_health.evaluations }}){% else %}n/a{% endif %}</td></tr>
+          <tr><th>Parse-failure rate</th><td>{% if payload.judge_health.parse_failure_rate is not none %}{{ payload.judge_health.parse_failure_rate|pct }} ({{ payload.judge_health.parse_failures }}){% else %}n/a{% endif %}</td></tr>
+          <tr><th>Inconsistency rate</th><td>{% if payload.judge_health.position_inconsistency_rate is not none %}{{ payload.judge_health.position_inconsistency_rate|pct }} ({{ payload.judge_health.position_inconsistencies }}){% else %}n/a{% endif %}</td></tr>
           <tr><th>Agreement</th><td>{% if payload.judge_panel.agreement_percent is not none %}{{ payload.judge_panel.agreement_percent|pct_value }}{% else %}n/a — {{ payload.judge_panel.agreement_reason }}{% endif %}</td></tr>
           <tr><th>Alpha</th><td>{% if payload.judge_panel.krippendorff_alpha is not none %}{{ payload.judge_panel.krippendorff_alpha|decimal(2) }}{% else %}n/a — {{ payload.judge_panel.krippendorff_alpha_reason }}{% endif %}</td></tr>
           <tr><th>Calibration</th><td>{% if payload.judge_panel.calibration_accuracy is not none %}{{ payload.judge_panel.calibration_accuracy|pct }}{% else %}n/a — {{ payload.judge_panel.calibration_accuracy_reason }}{% endif %}</td></tr>

@@ -119,6 +119,7 @@ def build_certificate(
     )
     for pair_id, override in latest_overrides(override_rows).items():
         judge_outcomes[str(pair_id)] = str(override["to_outcome"])
+    unresolved_pairs = sum(1 for outcome in judge_outcomes.values() if outcome == "unresolved")
     candidate_ci = _candidate_regression_ci(
         judge_outcomes,
         traces,
@@ -149,6 +150,7 @@ def build_certificate(
             "baseline_ci_upper": noise_ci["upper"],
             "epsilon": manifest.thresholds.epsilon_pp / 100,
             "id": "candidate_regression_rate",
+            "unresolved_pairs": unresolved_pairs,
             "passed": candidate_ci["upper"] <= threshold,
             "threshold": threshold,
         }
@@ -228,6 +230,7 @@ def build_certificate(
         "delta": _delta_ci(candidate_ci, noise_ci),
         "engine_version": __version__,
         "human_overrides": human_overrides,
+        "judge_health": _judge_health(judge_stats),
         "judge_panel": _judge_panel(judge_stats, judged=bool(judgment_rows)),
         "manifest": {
             "baseline": manifest.baseline.model_dump(mode="json"),
@@ -381,6 +384,11 @@ def _regressed_pairs(
     *,
     n: int,
 ) -> dict[str, Any]:
+    # SPEC-NOTE: "regressed" counts only genuine evidence of harm — a failing
+    # assertion or a judge verdict of worse_minor/worse_critical. Pairs the panel
+    # could not decide are counted separately as "unresolved" (still conservative
+    # for the verdict via the candidate CI) and are never laundered into the
+    # judge-flagged regression count, which run 0a716021 did to reach 85.3%.
     assertion_pairs = {
         str(row.get("pair_id") or row.get("trace_id"))
         for row in assertion_rows
@@ -388,15 +396,21 @@ def _regressed_pairs(
         and row.get("baseline_passed") is True
         and row.get("candidate_passed") is False
     }
-    judge_pairs = {
+    judge_worse = {
         pair_id
         for pair_id, outcome in judge_outcomes.items()
-        if outcome in REGRESSION_OUTCOMES
+        if outcome in {"worse_minor", "worse_critical"}
     }
-    both = assertion_pairs & judge_pairs
-    assertion_only = assertion_pairs - judge_pairs
-    judge_only = judge_pairs - assertion_pairs
+    unresolved = {
+        pair_id
+        for pair_id, outcome in judge_outcomes.items()
+        if outcome == "unresolved"
+    }
+    both = assertion_pairs & judge_worse
+    assertion_only = assertion_pairs - judge_worse
+    judge_only = judge_worse - assertion_pairs
     count = len(assertion_only) + len(judge_only) + len(both)
+    unresolved_only = unresolved - assertion_pairs
     return {
         "by_source": {
             "assertion": len(assertion_only),
@@ -405,6 +419,8 @@ def _regressed_pairs(
         },
         "count": count,
         "rate": round(count / n, 12) if n else 0.0,
+        "unresolved": len(unresolved_only),
+        "unresolved_rate": round(len(unresolved_only) / n, 12) if n else 0.0,
     }
 
 
@@ -692,6 +708,40 @@ def _zero_event_sentence(n: int) -> str:
         f"0 critical failures observed at n={n}; 95% upper bound on the true critical rate "
         f"\u2264 {rule_of_three_upper_bound(n) * 100:.1f}%."
     )
+
+
+def _judge_health(judge_stats: dict[str, Any]) -> dict[str, Any]:
+    """Panel-wide reliability so a collapsed judge layer is visible on the cert.
+
+    Every (pair, judge) evaluation either yields a valid verdict or abstains
+    (parse failure, position inconsistency, or call error). Run 0a716021's panel
+    produced 100 valid verdicts out of 426 evaluations — a collapse the headline
+    hid; these rates put it on the face of the certificate.
+    """
+    judges = judge_stats.get("judges") or {}
+    valid = abstentions = parse_failures = inconsistencies = call_errors = 0
+    for judge in judges.values():
+        valid += sum(int(count) for count in (judge.get("verdict_counts") or {}).values())
+        abstentions += int(judge.get("abstentions", 0))
+        parse_failures += int(judge.get("parse_failures", 0))
+        inconsistencies += int(judge.get("position_inconsistencies", 0))
+        call_errors += int(judge.get("call_errors", 0))
+    evaluations = valid + abstentions
+
+    def _rate(value: int) -> float | None:
+        return round(value / evaluations, 12) if evaluations else None
+
+    return {
+        "abstentions": abstentions,
+        "call_errors": call_errors,
+        "evaluations": evaluations,
+        "parse_failure_rate": _rate(parse_failures),
+        "parse_failures": parse_failures,
+        "position_inconsistencies": inconsistencies,
+        "position_inconsistency_rate": _rate(inconsistencies),
+        "valid_verdict_rate": _rate(valid),
+        "valid_verdicts": valid,
+    }
 
 
 def _judge_panel(judge_stats: dict[str, Any], *, judged: bool) -> dict[str, Any]:

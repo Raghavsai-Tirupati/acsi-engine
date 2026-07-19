@@ -218,6 +218,64 @@ def test_certificate_discloses_dedup_collapse_scope(tmp_path: Path) -> None:
     assert "jaccard ≥ 0.9" in report_text
 
 
+def test_unresolved_is_separated_from_judge_regression_and_health_shown(tmp_path: Path) -> None:
+    manifest_path, manifest, traces, run_dir = _write_inputs(tmp_path)
+    worse, unresolved, fine = (str(t.trace_id) for t in traces[:3])
+    _write_jsonl(
+        run_dir / "judgments.jsonl",
+        [
+            _judgment_row(worse, "openai/fake-judge", "worse_minor"),
+            _judgment_row(unresolved, "openai/fake-judge", "unresolved"),
+            _judgment_row(fine, "openai/fake-judge", "equivalent"),
+        ],
+    )
+    _write_json(
+        run_dir / "judge_stats.json",
+        {
+            "ensemble": {"krippendorff_alpha": None, "raw_agreement_percent": None},
+            "judges": {
+                "openai/fake-judge": {
+                    "abstentions": 1,
+                    "call_errors": 0,
+                    "parse_failures": 1,
+                    "position_inconsistencies": 0,
+                    "verdict_counts": {"equivalent": 1, "worse_minor": 1},
+                }
+            },
+            "run": {"cache_hits": 0, "completed_pairs": 3, "dispatched": 12},
+        },
+    )
+
+    result = build_certificate(
+        manifest=manifest,
+        traces=traces,
+        run_dir=run_dir,
+        manifest_path=manifest_path,
+    )
+    render_report(result.cert, output_path=run_dir / "report.html")
+    payload = result.payload
+    report_text = (run_dir / "report.html").read_text(encoding="utf-8")
+
+    rp = payload["regressed_pairs"]
+    assert rp["by_source"]["judge"] == 1  # only the genuine worse verdict
+    assert rp["count"] == 1
+    assert rp["unresolved"] == 1  # the unresolved pair is labeled, not laundered in
+
+    health = payload["judge_health"]
+    assert health["evaluations"] == 3
+    assert health["valid_verdicts"] == 2
+    assert health["valid_verdict_rate"] == round(2 / 3, 12)
+    assert health["parse_failure_rate"] == round(1 / 3, 12)
+
+    # criterion_b still counts the unresolved pair conservatively, but labels it.
+    criterion_b = next(c for c in payload["criteria"] if c["id"] == "candidate_regression_rate")
+    assert criterion_b["unresolved_pairs"] == 1
+
+    assert "unresolved" in report_text
+    assert "Valid-verdict rate" in report_text
+    assert "insufficient valid judge verdicts" in report_text or "could not reach" in report_text
+
+
 def _judgment_row(pair_id: str, judge: str, outcome: str | None, reason: str | None = None) -> dict:
     return {"abstain_reason": reason, "judge": judge, "outcome": outcome, "pair_id": pair_id}
 

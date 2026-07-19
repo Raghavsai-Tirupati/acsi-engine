@@ -71,10 +71,12 @@ def test_demo_runs_pass_and_block_and_verifies_both_certs(tmp_path: Path) -> Non
         "by_source": {"assertion": 0, "both": 24, "judge": 0},
         "count": 24,
         "rate": 0.08,
+        "unresolved": 0,
+        "unresolved_rate": 0.0,
     }
     assert (
         "24/300 sampled pairs regressed (8.0%) — 0 by assertion, "
-        "0 by judge, 24 by both."
+        "0 by judge verdict, 24 by both."
     ) in block_text
     assert (
         block_payload["regressed_pairs"]["by_source"]["assertion"]

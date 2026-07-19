@@ -146,11 +146,15 @@ def _criterion_input(criterion: dict[str, Any]) -> str:
     if criterion_id == "candidate_regression_rate":
         if criterion.get("mode") == "degraded":
             return f"n/a — {criterion.get('reason')}"
-        return (
+        base = (
             f"candidate upper {_format_ci_percent(criterion.get('actual_ci_upper', 0.0))} "
             f"vs noise upper {_format_ci_percent(criterion.get('baseline_ci_upper', 0.0))} "
             f"+ epsilon {_format_percent(criterion.get('epsilon', 0.0))}"
         )
+        unresolved = int(criterion.get("unresolved_pairs", 0) or 0)
+        if unresolved:
+            base += f" (includes {unresolved} unresolved pair(s), counted conservatively)"
+        return base
     if criterion_id == "critical_cluster_share":
         actual = criterion.get("actual") or []
         if not isinstance(actual, list) or not actual:

@@ -254,6 +254,8 @@ def test_cert_regeneration_recomputes_overridden_verdict_and_regressed_pairs(
         "by_source": {"assertion": 0, "both": 0, "judge": 2},
         "count": 2,
         "rate": 0.1,
+        "unresolved": 0,
+        "unresolved_rate": 0.0,
     }
 
     for pair_id in regressed:
@@ -278,6 +280,8 @@ def test_cert_regeneration_recomputes_overridden_verdict_and_regressed_pairs(
         "by_source": {"assertion": 0, "both": 0, "judge": 0},
         "count": 0,
         "rate": 0.0,
+        "unresolved": 0,
+        "unresolved_rate": 0.0,
     }
     assert after.cert["signature"] != before_signature
     assert after.cert_sha256 != before_sha
