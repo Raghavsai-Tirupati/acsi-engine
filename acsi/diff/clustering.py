@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -36,6 +38,11 @@ OUTCOME_SEVERITY_RANK: dict[CandidateOutcome, int] = {
     "worse_critical": 3,
 }
 SEVERITY_BY_RANK = {1: "worse_minor", 2: "major", 3: "worse_critical"}
+_OUTCOME_LABELS: dict[str, str] = {
+    "unresolved": "Unresolved — panel could not decide",
+    "worse_minor": "Judge: candidate worse (minor)",
+    "worse_critical": "Judge: candidate worse (critical)",
+}
 CLUSTER_NAME_PHASE = "cluster_name"
 CLUSTER_NAME_SCHEMA = {
     "type": "object",
@@ -83,6 +90,7 @@ class RegressionPair:
     detection_source: Literal["assertion", "judge", "mixed"]
     signature: str
     severity_rank: int
+    reason_labels: list[str] = field(default_factory=list)
     template_id: str | None = None
     system: str | None = None
 
@@ -100,6 +108,7 @@ class ClusterBucket:
     unclustered: bool = False
     skip_reason: str | None = None
     parse_failure: bool = False
+    reason_name: str | None = None
 
 
 @dataclass
@@ -202,6 +211,7 @@ def build_regression_set(records: list[CandidatePairRecord]) -> list[RegressionP
         assertion_reasons = sorted(
             failure.reason for failure in assertion_failures if failure.reason
         )
+        reason_labels = [reason_label(reason) for reason in assertion_reasons]
         severity_rank = _regression_severity_rank(record.ensemble_outcome, assertion_failures)
         regressions.append(
             RegressionPair(
@@ -222,11 +232,45 @@ def build_regression_set(records: list[CandidatePairRecord]) -> list[RegressionP
                     assertion_reasons=assertion_reasons,
                 ),
                 severity_rank=severity_rank,
+                reason_labels=reason_labels,
                 template_id=record.template_id,
                 system=record.system,
             )
         )
     return regressions
+
+
+_QUOTE_CHARS = "'\"`"
+_QUOTED_RE = re.compile(r"(['\"`]).*?\1", re.DOTALL)
+_DIGITS_RE = re.compile(r"\d+")
+
+
+def normalize_reason_template(reason: str) -> str:
+    """Collapse a validator reason to its mechanism for clustering.
+
+    Drops per-pair specifics so every "summary too long" failure shares one key
+    instead of fragmenting on the offending text (run 7f0978f5 left 150
+    same-mechanism failures unclustered for this reason). The whole span from the
+    first to the last quote is replaced — robust to quotes and digits inside the
+    offending value (e.g. an apostrophe in the summary) that a balanced-quote
+    match would trip on.
+    """
+    first = min((reason.find(char) for char in _QUOTE_CHARS if char in reason), default=-1)
+    if first != -1:
+        last = max(reason.rfind(char) for char in _QUOTE_CHARS)
+        reason = f"{reason[:first]}<x>{reason[last + 1 :]}"
+    return " ".join(_DIGITS_RE.sub("N", reason).split())
+
+
+def reason_label(reason: str) -> str:
+    """Human cluster name from a reason: shorten only long quoted values, keep
+    short ones (e.g. the ``` fence) and constants (e.g. a 400 limit)."""
+
+    def _shorten(match: re.Match[str]) -> str:
+        value = match.group(0)
+        return value if len(value) <= 26 else f"{value[0]}…{value[0]}"
+
+    return " ".join(_QUOTED_RE.sub(_shorten, reason).split())
 
 
 def compose_signature(
@@ -236,11 +280,23 @@ def compose_signature(
     candidate_response: str,
     assertion_reasons: Sequence[str] = (),
 ) -> str:
-    # Assertion validator messages (e.g. "summary: 612 is longer than 400") feed
-    # the naming input so length/schema failures are not mislabeled generically.
+    # SPEC-NOTE: assertion-flagged regressions cluster on assertion id + the
+    # normalized reason TEMPLATE (mechanism), not the raw reason or candidate
+    # output. Same-mechanism failures then share an identical signature and group,
+    # instead of every pair's unique reason text/output fragmenting them into the
+    # unclustered bucket. Judge-only regressions keep the outcome/reason/output
+    # signature so distinct judge failure modes still separate.
+    if flipped_assertion_ids:
+        templates = sorted({normalize_reason_template(r) for r in assertion_reasons if r})
+        # Cluster purely on the assertion mechanism (id + reason template). The
+        # judge's outcome is deliberately excluded so one mechanism does not split
+        # three ways by whatever the panel happened to say about each pair.
+        pieces = [
+            " ".join(flipped_assertion_ids),
+            " ".join(templates),
+        ]
+        return " ".join(piece for piece in pieces if piece)
     pieces = [
-        " ".join(flipped_assertion_ids),
-        " ".join(assertion_reasons),
         ensemble_outcome,
         " ".join(judge_reasons),
         candidate_response[:500],
@@ -254,6 +310,7 @@ def cluster_regressions(
     n_sampled_pairs: int,
     embedder: EmbeddingClient | None = None,
     min_cluster_size: int | None = None,
+    name_by_outcome: bool = False,
 ) -> list[ClusterBucket]:
     if not regressions:
         return []
@@ -270,6 +327,7 @@ def cluster_regressions(
                 skip_reason=(
                     f"regression_count {len(regressions)} < 2 * min_cluster_size {active_min}"
                 ),
+                name_by_outcome=name_by_outcome,
             )
         ]
 
@@ -299,6 +357,7 @@ def cluster_regressions(
                 name=cluster_id,
                 description="Unclustered regressions." if label == -1 else "Unnamed cluster.",
                 unclustered=label == -1,
+                name_by_outcome=name_by_outcome,
             )
         )
     return buckets
@@ -319,7 +378,9 @@ def name_clusters(
     cache_hits = 0
     cost_usd = 0.0
     for bucket in buckets:
-        if bucket.skip_reason:
+        if bucket.skip_reason or bucket.reason_name:
+            # Assertion clusters are named deterministically from their dominant
+            # reason label; only judge-only / unnamed clusters consult the namer.
             named.append(bucket)
             continue
         result = _name_cluster(
@@ -488,20 +549,44 @@ def _bucket_from_members(
     description: str,
     unclustered: bool = False,
     skip_reason: str | None = None,
+    name_by_outcome: bool = False,
 ) -> ClusterBucket:
     rank = max(member.severity_rank for member in members)
+    reason_name = _dominant_reason_label(members)
+    if reason_name is None and name_by_outcome:
+        # Judge-only clusters have no assertion reason; name them by their
+        # dominant outcome so the cert never mislabels them (e.g. as broken JSON).
+        dominant_outcome = min(
+            Counter(member.ensemble_outcome for member in members).items(),
+            key=lambda item: (-item[1], item[0]),
+        )[0]
+        reason_name = _OUTCOME_LABELS.get(dominant_outcome)
     return ClusterBucket(
         cluster_id=cluster_id,
         label=label,
-        name=name,
-        description=description,
+        name=reason_name or name,
+        description=(
+            f"{len(members)} pair(s) share this assertion failure: {reason_name}"
+            if reason_name
+            else description
+        ),
         pair_ids=sorted(member.pair_id for member in members),
         signatures=[member.signature for member in sorted(members, key=lambda item: item.pair_id)],
         severity=SEVERITY_BY_RANK[rank],
         share_of_sampled=round(len(members) / n_sampled_pairs, 12),
         unclustered=unclustered,
         skip_reason=skip_reason,
+        reason_name=reason_name,
     )
+
+
+def _dominant_reason_label(members: list[RegressionPair]) -> str | None:
+    """Most common assertion reason label across a cluster's members, if any."""
+    labels = Counter(label for member in members for label in member.reason_labels)
+    if not labels:
+        return None
+    # Deterministic tie-break: highest count, then lexicographically first.
+    return min(labels.items(), key=lambda item: (-item[1], item[0]))[0]
 
 
 def _regression_severity_rank(

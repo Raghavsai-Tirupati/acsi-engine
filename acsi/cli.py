@@ -1206,6 +1206,7 @@ def run(
                 regressions,
                 n_sampled_pairs=len(sampled_records),
                 min_cluster_size=manifest_model.clustering.min_cluster_size,
+                name_by_outcome=True,
             )
             # SPEC-NOTE: --live wires live baseline/candidate clients and judges
             # (the verdict-driving evidence). Cluster naming and patch proposal
@@ -1793,6 +1794,7 @@ def cluster(
             regressions,
             n_sampled_pairs=len(trace_records),
             min_cluster_size=manifest_model.clustering.min_cluster_size,
+            name_by_outcome=True,
         )
         named, stats = name_clusters(
             buckets,

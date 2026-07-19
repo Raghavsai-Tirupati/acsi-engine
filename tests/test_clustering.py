@@ -43,33 +43,51 @@ def test_regression_set_sources_and_signature_order() -> None:
         "judge",
         "mixed",
     ]
-    assert regressions[0].signature.startswith("json_schema equivalent")
-    assert compose_signature(
-        ["a1", "a2"],
-        "worse_critical",
-        ["reason one.", "reason two."],
-        "x" * 600,
-    ) == f"a1 a2 worse_critical reason one. reason two. {'x' * 500}"
+    assert regressions[0].signature == "json_schema"
+    # Assertion-flagged regressions cluster purely on assertion id + normalized
+    # reason template; outcome, judge reasons, and candidate text are excluded so
+    # same-mechanism failures share one signature.
+    assert (
+        compose_signature(
+            ["a1", "a2"],
+            "worse_critical",
+            ["reason one.", "reason two."],
+            "x" * 600,
+            assertion_reasons=["summary: 612 is longer than 400"],
+        )
+        == "a1 a2 summary: N is longer than N"
+    )
+    # Judge-only regressions keep outcome + judge reasons + candidate text.
+    assert (
+        compose_signature([], "worse_critical", ["reason one."], "x" * 600)
+        == f"worse_critical reason one. {'x' * 500}"
+    )
 
 
-def test_assertion_reason_feeds_naming_signature() -> None:
+def test_assertion_reason_template_groups_same_mechanism_failures() -> None:
+    # Two maxLength failures whose raw reasons differ only in the offending value
+    # must share a signature so they cluster together, not fragment.
     records = [
         _record(
-            "schema-len",
-            outcome="equivalent",
+            f"schema-{i}",
+            outcome="worse_critical",
+            candidate=f"unique body {i}",
             failures=[
                 AssertionFailure(
                     "summary-schema",
                     Severity.CRITICAL,
-                    reason="summary: 612 is longer than 400",
+                    reason=f"summary: {600 + i} is longer than 400",
                 )
             ],
         )
+        for i in range(2)
     ]
 
     regressions = build_regression_set(records)
 
-    assert "summary: 612 is longer than 400" in regressions[0].signature
+    assert regressions[0].signature == regressions[1].signature
+    assert "summary: N is longer than N" in regressions[0].signature
+    assert regressions[0].reason_labels == ["summary: 600 is longer than 400"]
 
 
 def test_small_n_guard_emits_all_regressions_bucket() -> None:

@@ -184,6 +184,27 @@ def _json_schema_passes(
 
 
 def _schema_error_reason(exc: JsonSchemaValidationError) -> str:
+    # Prefer a stable, mechanism-bearing message (path + validator + limit) over
+    # jsonschema's default, which for maxLength quotes the entire offending value
+    # and so fragments clustering. The limit (e.g. 400) is retained; the variable
+    # value is not.
+    field = ".".join(str(part) for part in exc.absolute_path) or "<root>"
+    validator = getattr(exc, "validator", None)
+    limit = getattr(exc, "validator_value", None)
+    stable = {
+        "maxLength": f"{field}: exceeds maxLength {limit}",
+        "minLength": f"{field}: below minLength {limit}",
+        "maximum": f"{field}: exceeds maximum {limit}",
+        "minimum": f"{field}: below minimum {limit}",
+        "maxItems": f"{field}: exceeds maxItems {limit}",
+        "minItems": f"{field}: below minItems {limit}",
+        "required": f"{field}: missing a required property",
+        "additionalProperties": f"{field}: unexpected additional properties",
+        "enum": f"{field}: not one of the allowed values",
+        "type": f"{field}: expected type {limit}",
+    }
+    if validator in stable:
+        return stable[validator]
     path = ".".join(str(part) for part in exc.absolute_path)
     return f"{path}: {exc.message}" if path else exc.message
 

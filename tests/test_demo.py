@@ -115,7 +115,11 @@ def test_demo_runs_pass_and_block_and_verifies_both_certs(tmp_path: Path) -> Non
     assert not LONG_RAW_FLOAT_RE.search(pass_html)
     assert not LONG_RAW_FLOAT_RE.search(block_html)
 
-    assert any(cluster["name"] == "Broken JSON output" for cluster in block_payload["clusters"])
+    # Cluster names are derived from the dominant assertion reason, not a canned
+    # label — the demo's injected broken JSON names the cluster from json_valid.
+    assert any(
+        cluster["name"] == "response is not valid JSON" for cluster in block_payload["clusters"]
+    )
 
     single_judge_cert = json.loads(json.dumps(block_cert))
     single_judge_cert["payload"]["judge_panel"].update(
