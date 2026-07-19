@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -56,6 +57,12 @@ class JudgeParseError(ValueError):
     pass
 
 
+_BARE_JSON_INSTRUCTION = (
+    "Output only the raw JSON object. Do not wrap it in markdown code fences "
+    "(no ```), and do not add any prose before or after it."
+)
+
+
 def render_pairwise_rubric(prompt: str, response_a: str, response_b: str) -> str:
     return "\n\n".join(
         [
@@ -65,6 +72,7 @@ def render_pairwise_rubric(prompt: str, response_a: str, response_b: str) -> str
                 "verdict must be one of a_better, b_better, equivalent. "
                 "severity_if_worse must be minor, critical, or null."
             ),
+            _BARE_JSON_INSTRUCTION,
             f"Prompt:\n{prompt}",
             f"Response A:\n{response_a}",
             f"Response B:\n{response_b}",
@@ -77,6 +85,7 @@ def render_classifier_rubric(prompt: str, response: str, criterion: str) -> str:
         [
             "You are evaluating one response against a criterion.",
             "Return only JSON with keys pass and reason.",
+            _BARE_JSON_INSTRUCTION,
             f"Criterion:\n{criterion}",
             f"Prompt:\n{prompt}",
             f"Response:\n{response}",
@@ -85,12 +94,21 @@ def render_classifier_rubric(prompt: str, response: str, criterion: str) -> str:
 
 
 def parse_pairwise_judgment(text: str | None) -> PairwiseJudgment:
-    payload = _parse_json(text, PAIRWISE_SCHEMA)
+    payload = _parse_json(text, PAIRWISE_SCHEMA, normalizer=_normalize_pairwise)
     return PairwiseJudgment(
         verdict=payload["verdict"],
         severity_if_worse=payload["severity_if_worse"],
         reason=str(payload["reason"]),
     )
+
+
+def _normalize_pairwise(payload: dict[str, Any]) -> None:
+    # Some judges emit the string "null" (or "none") for severity_if_worse rather
+    # than a JSON null. The verdict is unambiguous; coerce the sentinel to None so
+    # a valid verdict is not discarded on this quibble.
+    severity = payload.get("severity_if_worse")
+    if isinstance(severity, str) and severity.strip().lower() in {"null", "none", ""}:
+        payload["severity_if_worse"] = None
 
 
 def parse_classifier_judgment(text: str | None) -> ClassifierJudgment:
@@ -114,12 +132,62 @@ def map_position_verdict(
     return "worse_critical" if judgment.severity_if_worse == "critical" else "worse_minor"
 
 
-def _parse_json(text: str | None, schema: dict[str, Any]) -> dict[str, Any]:
+def _parse_json(
+    text: str | None,
+    schema: dict[str, Any],
+    *,
+    normalizer: Any = None,
+) -> dict[str, Any]:
     if text is None:
         raise JudgeParseError("Judge returned no text.")
+    candidate = _extract_json_object(text)
     try:
-        payload = json.loads(text)
+        payload = json.loads(candidate)
+        if normalizer is not None and isinstance(payload, dict):
+            normalizer(payload)
         validate_json_schema(payload, schema)
     except (json.JSONDecodeError, JsonSchemaValidationError) as exc:
         raise JudgeParseError(str(exc)) from exc
     return payload
+
+
+_FENCE_RE = re.compile(r"```[a-zA-Z0-9_-]*\s*\n?(.*?)\n?```", re.DOTALL)
+
+
+def _extract_json_object(text: str) -> str:
+    """Recover the verdict JSON object from a model reply.
+
+    Real judges (e.g. gemini) wrap valid verdict JSON in ```json fences or add a
+    preamble; run 0a716021 lost 848/851 gemini verdicts to this. Strip a fenced
+    block if present, then extract the first brace-balanced object (respecting
+    strings), so a well-formed verdict is not discarded over its wrapping.
+    """
+    stripped = text.strip()
+    fenced = _FENCE_RE.search(stripped)
+    if fenced:
+        stripped = fenced.group(1).strip()
+    start = stripped.find("{")
+    if start == -1:
+        return stripped
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start, len(stripped)):
+        char = stripped[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return stripped[start : index + 1]
+    return stripped[start:]
