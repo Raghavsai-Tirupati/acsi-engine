@@ -24,6 +24,7 @@ from acsi.judge.rubric import (
     map_position_verdict,
     parse_classifier_judgment,
     parse_pairwise_judgment,
+    reconcile_position_outcomes,
     render_classifier_rubric,
     render_pairwise_rubric,
 )
@@ -530,9 +531,7 @@ def _combine_orderings(
         return None, "parse_failure"
     left_outcome = map_position_verdict(left.parsed, candidate_position="a")
     right_outcome = map_position_verdict(right.parsed, candidate_position="b")
-    if left_outcome != right_outcome:
-        return None, "position_inconsistency"
-    return left_outcome, None
+    return reconcile_position_outcomes(left_outcome, right_outcome)
 
 
 def _calls_by_trace_sample(calls: list[StoredCall], *, sample_index: int) -> dict[str, StoredCall]:

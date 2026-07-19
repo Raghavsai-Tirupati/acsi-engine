@@ -132,6 +132,36 @@ def map_position_verdict(
     return "worse_critical" if judgment.severity_if_worse == "critical" else "worse_minor"
 
 
+_NOT_WORSE: frozenset[CandidateOutcome] = frozenset({"equivalent", "candidate_better"})
+_WORSE: frozenset[CandidateOutcome] = frozenset({"worse_minor", "worse_critical"})
+
+
+def reconcile_position_outcomes(
+    left: CandidateOutcome,
+    right: CandidateOutcome,
+) -> tuple[CandidateOutcome | None, str | None]:
+    """Reconcile the two order-swapped outcomes for one (pair, judge).
+
+    SPEC-NOTE: the swap check enforces direction-of-harm consistency, not exact
+    label match. Run 0a716021 abstained 112/213 pairs as "position_inconsistency"
+    of which 88 were candidate_better-vs-equivalent — the judge merely disagreed
+    on *how good* the candidate was across orderings, never on whether it
+    regressed. Both orderings on the same side of the harm boundary reconcile to a
+    conservative representative (the milder label unless both agree on the
+    stronger one). Only a genuine flip across the boundary (not-worse vs worse)
+    stays a position inconsistency and abstains.
+    """
+    if left in _NOT_WORSE and right in _NOT_WORSE:
+        if left == "candidate_better" and right == "candidate_better":
+            return "candidate_better", None
+        return "equivalent", None
+    if left in _WORSE and right in _WORSE:
+        if left == "worse_critical" and right == "worse_critical":
+            return "worse_critical", None
+        return "worse_minor", None
+    return None, "position_inconsistency"
+
+
 def _parse_json(
     text: str | None,
     schema: dict[str, Any],

@@ -8,6 +8,7 @@ from acsi.judge.rubric import (
     map_position_verdict,
     parse_classifier_judgment,
     parse_pairwise_judgment,
+    reconcile_position_outcomes,
     render_pairwise_rubric,
 )
 
@@ -92,6 +93,32 @@ def test_position_verdict_maps_back_to_candidate_outcome() -> None:
         )
         == "worse_critical"
     )
+
+
+def test_reconcile_same_harm_class_resolves_conservatively() -> None:
+    # Same side of the harm boundary: reconcile, do not abstain.
+    assert reconcile_position_outcomes("candidate_better", "equivalent") == ("equivalent", None)
+    assert reconcile_position_outcomes("equivalent", "candidate_better") == ("equivalent", None)
+    assert reconcile_position_outcomes("candidate_better", "candidate_better") == (
+        "candidate_better",
+        None,
+    )
+    # Both worse: milder unless both agree critical.
+    assert reconcile_position_outcomes("worse_minor", "worse_critical") == ("worse_minor", None)
+    assert reconcile_position_outcomes("worse_critical", "worse_critical") == (
+        "worse_critical",
+        None,
+    )
+    assert reconcile_position_outcomes("equivalent", "equivalent") == ("equivalent", None)
+
+
+def test_reconcile_cross_harm_class_abstains() -> None:
+    outcome, reason = reconcile_position_outcomes("candidate_better", "worse_minor")
+    assert outcome is None
+    assert reason == "position_inconsistency"
+    outcome, reason = reconcile_position_outcomes("equivalent", "worse_critical")
+    assert outcome is None
+    assert reason == "position_inconsistency"
 
 
 def test_classifier_parse_is_schema_validated() -> None:
