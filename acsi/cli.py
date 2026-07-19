@@ -321,6 +321,46 @@ def _missing_provider_keys(manifest_model) -> list[str]:
     return sorted({env for env in required.values() if not os.environ.get(env)})
 
 
+_REBUILD_INPUT_FILES = (
+    "sampled_traces.jsonl",
+    "assertion_results.jsonl",
+    "judgments.jsonl",
+    "judge_stats.json",
+    "sampling_report.json",
+    "scrub_report.json",
+    "run.json",
+    "run_identity.json",
+    "overrides.jsonl",
+)
+
+
+def _load_run_identity(path: Path) -> dict[str, object]:
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _copy_rebuild_inputs(src: Path, dst: Path) -> None:
+    """Copy a run's stored evidence into a fresh output dir (never the reverse).
+
+    Clusters, cert, and report are regenerated in dst; the model outputs
+    (baseline/candidate/judge responses, assertions, judgments) are copied
+    verbatim so the rebuild re-renders the same evidence with corrected logic.
+    """
+    dst.mkdir(parents=True, exist_ok=True)
+    for name in _REBUILD_INPUT_FILES:
+        source = src / name
+        if source.exists():
+            shutil.copy2(source, dst / name)
+    for subdir in ("baseline", "candidate"):
+        source = src / subdir
+        if source.exists():
+            shutil.copytree(source, dst / subdir, dirs_exist_ok=True)
+
+
 def _judge_progress(message: str) -> None:
     # Progress goes to stderr so it never corrupts --json stdout. One line per
     # judged pair (plus a phase summary) means silence always signals idle.
@@ -2022,6 +2062,107 @@ def cert(
         if result.key_generated:
             console.print("Generated .acsi/keys/ed25519.key for certificate signing.")
         console.print_json(data=payload)
+
+
+@app.command(name="rebuild-cert")
+def rebuild_cert(
+    run_id: Annotated[
+        str | None,
+        typer.Option("--run", help="Run id under --run-dir/runs to rebuild from."),
+    ] = None,
+    manifest: ManifestOption = Path("acsi.yaml"),
+    run_dir: RunDirOption = Path(".acsi"),
+    out: Annotated[
+        Path | None,
+        typer.Option("--out", help="Output directory. Defaults to <run>-rebuild."),
+    ] = None,
+    json_output: JsonOutputOption = False,
+) -> None:
+    """Rebuild the certificate and report from a run's stored data, zero spend.
+
+    Re-derives clusters and re-renders the certificate from the baseline,
+    candidate, and judge outputs already on disk — no provider is ever called.
+    The original run is never modified; all outputs go to a new directory.
+    """
+    if run_id is None:
+        _fail("Pass --run with the run id to rebuild.", json_output)
+    try:
+        source_dir = run_dir / "runs" / run_id
+        if not source_dir.exists():
+            _fail(f"No run found at {source_dir}.", json_output)
+        manifest_model = load_workload_manifest(manifest)
+        config_hash = sha256_file(manifest)
+        identity = _load_run_identity(source_dir / "run_identity.json")
+        recorded_hash = identity.get("config_hash")
+        if recorded_hash is not None and recorded_hash != config_hash:
+            _fail(
+                "Manifest does not match the run's recorded config_hash; "
+                "pass the exact manifest the run used.",
+                json_output,
+            )
+
+        dest_dir = out or (run_dir / "runs" / f"{run_id}-rebuild")
+        if dest_dir.resolve() == source_dir.resolve():
+            _fail("Output directory must differ from the original run directory.", json_output)
+        _copy_rebuild_inputs(source_dir, dest_dir)
+
+        # Re-derive clusters from stored evidence (deterministic, no model calls).
+        traces = import_jsonl_paths([dest_dir / "sampled_traces.jsonl"]).records
+        baseline_calls = _load_response_calls(dest_dir / "baseline" / "responses.jsonl")
+        candidate_calls = _load_response_calls(dest_dir / "candidate" / "responses.jsonl")
+        judgments = _load_judgment_rows(dest_dir / "judgments.jsonl")
+        assertion_failures = _load_assertion_failures(dest_dir / "assertion_results.jsonl")
+        records = _candidate_records_for_clustering(
+            traces,
+            baseline_calls,
+            candidate_calls,
+            judgments,
+            assertion_failures,
+            min_judges=manifest_model.judging.min_judges,
+        )
+        regressions = build_regression_set(records)
+        buckets = cluster_regressions(
+            regressions,
+            n_sampled_pairs=len(traces),
+            min_cluster_size=manifest_model.clustering.min_cluster_size,
+            name_by_outcome=True,
+        )
+        named, stats = name_clusters(
+            buckets,
+            namer=_fake_namer(),
+            store=ReplayStore(dest_dir / "replay.sqlite"),
+            run_id=run_id,
+        )
+        write_clusters_json(dest_dir / "clusters.json", named, stats=stats)
+
+        cert_result = build_certificate(
+            manifest=manifest_model,
+            traces=traces,
+            run_dir=dest_dir,
+            manifest_path=manifest,
+        )
+        report_hash = render_report(cert_result.cert, output_path=dest_dir / "report.html")
+    except (
+        BannedLanguageError,
+        CertificateVerificationError,
+        EvidenceFloorError,
+        OSError,
+        ValueError,
+    ) as exc:
+        _fail(str(exc), json_output)
+
+    payload = {
+        "status": "ok",
+        "rebuilt_from": str(source_dir),
+        "run_dir": str(dest_dir),
+        "verdict": cert_result.payload["verdict"],
+        "cert_path": str(dest_dir / "cert.json"),
+        "cert_sha256": cert_result.cert_sha256,
+        "report_path": str(dest_dir / "report.html"),
+        "report_sha256": report_hash,
+        "spend_usd": 0.0,
+    }
+    console.print_json(data=payload)
 
 
 @app.command()
