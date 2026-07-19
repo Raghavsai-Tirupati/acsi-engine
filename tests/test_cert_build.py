@@ -259,7 +259,11 @@ def test_unresolved_is_separated_from_judge_regression_and_health_shown(tmp_path
     rp = payload["regressed_pairs"]
     assert rp["by_source"]["judge"] == 1  # only the genuine worse verdict
     assert rp["count"] == 1
-    assert rp["unresolved"] == 1  # the unresolved pair is labeled, not laundered in
+    # One consistent unresolved taxonomy: total == only + also_regressed.
+    assert rp["unresolved"] == 1
+    assert rp["unresolved_only"] == 1
+    assert rp["unresolved_also_regressed"] == 0
+    assert rp["unresolved"] == rp["unresolved_only"] + rp["unresolved_also_regressed"]
 
     health = payload["judge_health"]
     assert health["evaluations"] == 3
@@ -267,13 +271,60 @@ def test_unresolved_is_separated_from_judge_regression_and_health_shown(tmp_path
     assert health["valid_verdict_rate"] == round(2 / 3, 12)
     assert health["parse_failure_rate"] == round(1 / 3, 12)
 
-    # criterion_b still counts the unresolved pair conservatively, but labels it.
+    # criterion_b counts the unresolved pair conservatively and uses the SAME
+    # total the headline shows — never two numbers for one concept.
     criterion_b = next(c for c in payload["criteria"] if c["id"] == "candidate_regression_rate")
-    assert criterion_b["unresolved_pairs"] == 1
+    assert criterion_b["unresolved_pairs"] == rp["unresolved"]
 
     assert "unresolved" in report_text
     assert "Valid-verdict rate" in report_text
-    assert "insufficient valid judge verdicts" in report_text or "could not reach" in report_text
+    assert "could not decide" in report_text
+
+
+def test_unresolved_taxonomy_is_consistent_across_headline_and_criterion(tmp_path: Path) -> None:
+    # Reproduces run 7f0978f5 in miniature: an unresolved pair that ALSO fails an
+    # assertion (the 62-pair overlap) must not produce two different unresolved
+    # numbers. total(unresolved) == only + also_regressed, and criterion B agrees.
+    manifest_path, manifest, traces, run_dir = _write_inputs(tmp_path)
+    overlap, unresolved_only = str(traces[0].trace_id), str(traces[1].trace_id)
+    _write_jsonl(
+        run_dir / "judgments.jsonl",
+        [
+            _judgment_row(overlap, "openai/fake-judge", "unresolved"),
+            _judgment_row(unresolved_only, "openai/fake-judge", "unresolved"),
+        ],
+    )
+    _write_jsonl(
+        run_dir / "assertion_results.jsonl",
+        [
+            {
+                "assertion_id": "summary-schema",
+                "baseline_passed": True,
+                "candidate_passed": False,
+                "pair_id": overlap,
+                "reason": "summary: 612 is longer than 400",
+                "severity": "critical",
+                "trace_id": overlap,
+            }
+        ],
+    )
+
+    result = build_certificate(
+        manifest=manifest,
+        traces=traces,
+        run_dir=run_dir,
+        manifest_path=manifest_path,
+    )
+    rp = result.payload["regressed_pairs"]
+    criterion_b = next(
+        c for c in result.payload["criteria"] if c["id"] == "candidate_regression_rate"
+    )
+
+    assert rp["unresolved"] == 2  # both pairs are panel-unresolved
+    assert rp["unresolved_also_regressed"] == 1  # the overlap pair
+    assert rp["unresolved_only"] == 1
+    assert rp["unresolved"] == rp["unresolved_only"] + rp["unresolved_also_regressed"]
+    assert criterion_b["unresolved_pairs"] == rp["unresolved"]
 
 
 def _judgment_row(pair_id: str, judge: str, outcome: str | None, reason: str | None = None) -> dict:

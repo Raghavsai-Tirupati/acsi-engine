@@ -72,6 +72,8 @@ def test_demo_runs_pass_and_block_and_verifies_both_certs(tmp_path: Path) -> Non
         "count": 24,
         "rate": 0.08,
         "unresolved": 0,
+        "unresolved_also_regressed": 0,
+        "unresolved_only": 0,
         "unresolved_rate": 0.0,
     }
     assert (

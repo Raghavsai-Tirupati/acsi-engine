@@ -255,6 +255,8 @@ def test_cert_regeneration_recomputes_overridden_verdict_and_regressed_pairs(
         "count": 2,
         "rate": 0.1,
         "unresolved": 0,
+        "unresolved_also_regressed": 0,
+        "unresolved_only": 0,
         "unresolved_rate": 0.0,
     }
 
@@ -281,6 +283,8 @@ def test_cert_regeneration_recomputes_overridden_verdict_and_regressed_pairs(
         "count": 0,
         "rate": 0.0,
         "unresolved": 0,
+        "unresolved_also_regressed": 0,
+        "unresolved_only": 0,
         "unresolved_rate": 0.0,
     }
     assert after.cert["signature"] != before_signature

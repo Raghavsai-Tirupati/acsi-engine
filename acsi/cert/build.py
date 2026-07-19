@@ -410,7 +410,15 @@ def _regressed_pairs(
     assertion_only = assertion_pairs - judge_worse
     judge_only = judge_worse - assertion_pairs
     count = len(assertion_only) + len(judge_only) + len(both)
-    unresolved_only = unresolved - assertion_pairs
+    # SPEC-NOTE: run 7f0978f5 showed two different numbers for one concept — the
+    # headline said "66 unresolved" (panel-unresolved minus assertion overlap)
+    # while criterion B said "128 unresolved" (all panel-unresolved). One taxonomy
+    # now: `unresolved` is the total the panel could not decide; `unresolved_only`
+    # excludes pairs already counted as regressions; `unresolved_also_regressed` is
+    # the overlap. count + unresolved_only + (clean) sum to n, and the overlap is
+    # visible rather than silently dropped.
+    unresolved_also_regressed = unresolved & (assertion_pairs | judge_worse)
+    unresolved_only = unresolved - assertion_pairs - judge_worse
     return {
         "by_source": {
             "assertion": len(assertion_only),
@@ -419,8 +427,10 @@ def _regressed_pairs(
         },
         "count": count,
         "rate": round(count / n, 12) if n else 0.0,
-        "unresolved": len(unresolved_only),
-        "unresolved_rate": round(len(unresolved_only) / n, 12) if n else 0.0,
+        "unresolved": len(unresolved),
+        "unresolved_also_regressed": len(unresolved_also_regressed),
+        "unresolved_only": len(unresolved_only),
+        "unresolved_rate": round(len(unresolved) / n, 12) if n else 0.0,
     }
 
 

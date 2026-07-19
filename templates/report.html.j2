@@ -43,9 +43,10 @@
         {% if payload.regressed_pairs.unresolved %}
         <p>
           {{ payload.regressed_pairs.unresolved }}/{{ payload.coverage.n }} pairs unresolved
-          ({{ payload.regressed_pairs.unresolved_rate|pct }}) — the panel could not reach enough
-          valid verdicts. Counted conservatively toward the verdict, not as judge-flagged
-          regressions.
+          ({{ payload.regressed_pairs.unresolved_rate|pct }}) — the panel could not decide:
+          {{ payload.regressed_pairs.unresolved_only }} unresolved-only,
+          {{ payload.regressed_pairs.unresolved_also_regressed }} also assertion-flagged.
+          Counted conservatively toward the verdict, not as judge-flagged regressions.
         </p>
         {% endif %}
         {% if payload.coverage.zero_event_bound_sentence %}
