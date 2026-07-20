@@ -90,6 +90,42 @@ def test_assertion_reason_template_groups_same_mechanism_failures() -> None:
     assert regressions[0].reason_labels == ["summary: 600 is longer than 400"]
 
 
+def test_unresolved_cluster_is_not_labeled_an_assertion_failure() -> None:
+    # A judge-only cluster of unresolved pairs must read as a panel outcome, never
+    # as a shared assertion failure, and must not carry an assertion-style severity.
+    regressions = build_regression_set(
+        [_record(f"u{i}", outcome="unresolved", candidate="body") for i in range(6)]
+    )
+    buckets = cluster_regressions(
+        regressions,
+        n_sampled_pairs=100,
+        min_cluster_size=3,
+        name_by_outcome=True,
+    )
+
+    assert buckets
+    for bucket in buckets:
+        assert bucket.name == "Unresolved — panel could not decide"
+        assert bucket.severity == "unresolved"
+        assert "assertion failure" not in bucket.description
+        assert "judge panel outcome" in bucket.description
+
+
+def test_judge_worse_cluster_keeps_harm_severity() -> None:
+    regressions = build_regression_set(
+        [_record(f"w{i}", outcome="worse_critical", candidate="body") for i in range(6)]
+    )
+    buckets = cluster_regressions(
+        regressions,
+        n_sampled_pairs=100,
+        min_cluster_size=3,
+        name_by_outcome=True,
+    )
+
+    assert buckets
+    assert all(bucket.severity == "worse_critical" for bucket in buckets)
+
+
 def test_small_n_guard_emits_all_regressions_bucket() -> None:
     regressions = build_regression_set([_record(f"p{i}", outcome="worse_minor") for i in range(4)])
 

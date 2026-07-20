@@ -551,28 +551,44 @@ def _bucket_from_members(
     skip_reason: str | None = None,
     name_by_outcome: bool = False,
 ) -> ClusterBucket:
-    rank = max(member.severity_rank for member in members)
-    reason_name = _dominant_reason_label(members)
-    if reason_name is None and name_by_outcome:
-        # Judge-only clusters have no assertion reason; name them by their
-        # dominant outcome so the cert never mislabels them (e.g. as broken JSON).
+    # SPEC-NOTE: an assertion cluster carries an assertion-style severity and is
+    # described as a shared assertion failure. A judge-only cluster (no member has
+    # an assertion failure) is a panel OUTCOME, not an assertion failure: it is
+    # named and severity-labeled by that outcome (e.g. "unresolved") and never
+    # described as an assertion failure — unresolved is not a harm severity.
+    assertion_name = _dominant_reason_label(members)
+    if assertion_name is not None:
+        reason_name = assertion_name
+        severity = SEVERITY_BY_RANK[max(member.severity_rank for member in members)]
+        resolved_description = (
+            f"{len(members)} pair(s) share this assertion failure: {assertion_name}"
+        )
+    elif name_by_outcome:
         dominant_outcome = min(
             Counter(member.ensemble_outcome for member in members).items(),
             key=lambda item: (-item[1], item[0]),
         )[0]
         reason_name = _OUTCOME_LABELS.get(dominant_outcome)
+        severity = dominant_outcome if reason_name else SEVERITY_BY_RANK[
+            max(member.severity_rank for member in members)
+        ]
+        resolved_description = (
+            f"{len(members)} pair(s) with judge panel outcome: {reason_name}"
+            if reason_name
+            else description
+        )
+    else:
+        reason_name = None
+        severity = SEVERITY_BY_RANK[max(member.severity_rank for member in members)]
+        resolved_description = description
     return ClusterBucket(
         cluster_id=cluster_id,
         label=label,
         name=reason_name or name,
-        description=(
-            f"{len(members)} pair(s) share this assertion failure: {reason_name}"
-            if reason_name
-            else description
-        ),
+        description=resolved_description,
         pair_ids=sorted(member.pair_id for member in members),
         signatures=[member.signature for member in sorted(members, key=lambda item: item.pair_id)],
-        severity=SEVERITY_BY_RANK[rank],
+        severity=severity,
         share_of_sampled=round(len(members) / n_sampled_pairs, 12),
         unclustered=unclustered,
         skip_reason=skip_reason,
