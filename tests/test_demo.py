@@ -97,23 +97,26 @@ def test_demo_runs_pass_and_block_and_verifies_both_certs(tmp_path: Path) -> Non
     assert pass_payload["noise_floor_raw"]["analytic_note"]["q"] == 0.05
     assert pass_noise["rate"] > 0
     assert pass_criterion_b["actual_ci_upper"] <= pass_criterion_b["threshold"]
-    # "Similarity threshold" is the user-facing label; the exact key
-    # "threshold_source" still appears in the auditor raw view, and its value
-    # "calibrated" shows in the plain narrative.
-    assert "Similarity threshold" in pass_html
+    # v2: tau (similarity threshold) moved to the auditor raw view; the human
+    # noise section keeps "How the noise bar was set". The exact key
+    # "threshold_source" is in the raw view and its value "calibrated" shows.
+    assert "How the noise bar was set" in pass_html
     assert "threshold_source" in pass_html
     assert "calibrated" in pass_html
 
     assert "None" not in pass_html
     assert "None" not in block_html
     assert "n/a — no pairs required judging" in pass_html
-    assert "n/a — no calibration set provided" in block_html
+    # v2: calibration accuracy moved to the auditor raw view (parenthesized reason).
+    assert "no calibration set provided" in block_html
     assert "100.0%" in block_html
     assert "1.00" in block_html
 
-    assert re.search(r"Output length inflation</th><td>-?\d+\.\d{2}×", block_html)
-    assert re.search(r"Latency delta</th><td>-?\d+ ms", block_html)
-    assert re.search(r"USD delta</th><td>\$-?\d+\.\d{4}", block_html)
+    # v2 rows carry a muted <span class="def"> between label and value; the value
+    # format (multiplier / ms / USD) is unchanged and still guarded.
+    assert re.search(r"Output length inflation.*?<td>-?\d+\.\d{2}×", block_html)
+    assert re.search(r"Latency delta.*?<td>-?\d+ ms", block_html)
+    assert re.search(r"USD delta.*?<td>\$-?\d+\.\d{4}", block_html)
     assert not LONG_RAW_FLOAT_RE.search(pass_html)
     assert not LONG_RAW_FLOAT_RE.search(block_html)
 

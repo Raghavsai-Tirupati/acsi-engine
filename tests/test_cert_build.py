@@ -215,8 +215,9 @@ def test_certificate_discloses_dedup_collapse_scope(tmp_path: Path) -> None:
     assert coverage["n_after_dedup"] == 3
     assert coverage["dedup_collapsed"] == 2
     assert coverage["dedup_method"] == {"jaccard_threshold": 0.9, "shingle_size": 5}
-    assert "Traces collected" in report_text
-    assert "Dedup collapsed" in report_text
+    # v2 scope labels are plain-English.
+    assert "Real inputs collected" in report_text
+    assert "Duplicates collapsed" in report_text
     assert "jaccard ≥ 0.9" in report_text
 
 
@@ -485,13 +486,15 @@ def test_live_run_certificate_report_omits_fake_banner(tmp_path: Path) -> None:
 
 
 def _visible_text(html: str) -> str:
-    """Rendered text a reader sees: excludes the machine JSON script and the
-    auditor raw-values expander, the only places raw keys may appear."""
-    without_script = re.sub(r"<script[^>]*>.*?</script>", "", html, flags=re.DOTALL)
+    """Rendered text a reader sees: excludes the machine JSON script, the inline
+    CSS/font blocks, and the auditor raw-values expander — the only places raw
+    keys (or base64 font data) may appear."""
+    stripped = re.sub(r"<script[^>]*>.*?</script>", "", html, flags=re.DOTALL)
+    stripped = re.sub(r"<style[^>]*>.*?</style>", "", stripped, flags=re.DOTALL)
     return re.sub(
         r'<details class="expander rawview">.*?</details>',
         "",
-        without_script,
+        stripped,
         flags=re.DOTALL,
     )
 
@@ -524,11 +527,16 @@ def test_no_raw_payload_keys_in_visible_text(tmp_path: Path) -> None:
     html = (run_dir / "report.html").read_text(encoding="utf-8")
     visible = _visible_text(html)
 
-    for jargon in ("threshold_source", "worse_critical", "epsilon", "tau"):
+    # Includes the v2-moved fields: tau (similarity threshold) and Krippendorff's
+    # alpha now live only in the auditor raw view, not human sections.
+    for jargon in ("threshold_source", "worse_critical", "epsilon", "tau", "krippendorff"):
         assert jargon not in visible, f"raw key {jargon!r} leaked into visible text"
+    assert "Krippendorff" not in visible
     # ...but auditors can still find the exact keys in the raw view / JSON.
     assert "threshold_source" in html
     assert "worse_critical" in html
+    assert "krippendorff_alpha" in html
+    assert "noise_floor_raw.tau" in html
 
 
 def test_cluster_details_show_prompt_response_and_reason(tmp_path: Path) -> None:
