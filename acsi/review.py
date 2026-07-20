@@ -158,7 +158,7 @@ def _render_review_report(active_run_dir: Path) -> str:
     if not cert_path.exists():
         raise ReviewError(f"Missing certificate at {cert_path}")
     cert = json.loads(cert_path.read_text(encoding="utf-8"))
-    return render_report_html(cert, review_mode=True)
+    return render_report_html(cert, review_mode=True, evidence_dir=active_run_dir)
 
 
 def _run_payload(active_run_dir: Path) -> dict[str, Any]:

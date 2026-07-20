@@ -3,26 +3,110 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>ACSI Certificate Report</title>
+    <title>ACSI Certificate</title>
     <style>
-      body { color: #111827; font-family: ui-sans-serif, system-ui, sans-serif; margin: 0; }
-      main { margin: 0 auto; max-width: 1080px; padding: 32px 20px; }
-      h1, h2, h3 { line-height: 1.2; margin: 0 0 12px; }
-      h2 { border-top: 1px solid #d1d5db; margin-top: 28px; padding-top: 24px; }
-      table { border-collapse: collapse; width: 100%; }
-      th, td { border-bottom: 1px solid #e5e7eb; padding: 8px; text-align: left; vertical-align: top; }
-      th { background: #f9fafb; font-weight: 700; }
-      pre { background: #f3f4f6; overflow: auto; padding: 12px; white-space: pre-wrap; }
-      .banner { border: 2px solid #111827; padding: 18px; }
-      .fake-banner { background: #b91c1c; border: 4px solid #7f1d1d; color: #fff; font-size: 1.4rem; font-weight: 800; letter-spacing: 0.03em; margin: 0 0 20px; padding: 20px; text-align: center; text-transform: uppercase; }
-      .verdict { font-size: 2rem; font-weight: 800; }
-      .muted { color: #4b5563; }
-      .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
-      .panel { border: 1px solid #d1d5db; padding: 12px; }
-      .small { font-size: 0.9rem; }
-      .stack { display: grid; gap: 10px; }
-      input, select, textarea { border: 1px solid #9ca3af; font: inherit; padding: 6px; }
-      button { border: 1px solid #111827; background: #fff; cursor: pointer; font: inherit; padding: 6px 10px; }
+      :root {
+        --ink: #191b1f; --muted: #6b7280; --faint: #9aa1ab;
+        --bg: #ffffff; --card: #ffffff; --sunken: #f7f8fa;
+        --line: #e7e9ee; --line-strong: #d3d7de;
+        --pass: #15803d; --pass-bg: #f0fdf4; --pass-line: #bbf7d0;
+        --block: #c0362c; --block-bg: #fef2f2; --block-line: #fecaca;
+        --accent: #191b1f;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --ink: #e9ebef; --muted: #9ba2ad; --faint: #6b7280;
+          --bg: #0f1114; --card: #16181d; --sunken: #1b1e24;
+          --line: #262a31; --line-strong: #333842;
+          --pass: #4ade80; --pass-bg: #10221a; --pass-line: #1f4d34;
+          --block: #f87171; --block-bg: #241414; --block-line: #4d2020;
+          --accent: #e9ebef;
+        }
+      }
+      * { box-sizing: border-box; }
+      html { -webkit-text-size-adjust: 100%; }
+      body {
+        color: var(--ink); background: var(--bg); margin: 0;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        line-height: 1.55; font-size: 16px;
+        -webkit-font-smoothing: antialiased;
+      }
+      main { max-width: 860px; margin: 0 auto; padding: 40px 24px 72px; }
+      h1, h2, h3 { line-height: 1.25; margin: 0; font-weight: 640; letter-spacing: -0.01em; }
+      p { margin: 0; }
+      a { color: inherit; }
+      code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.86em; }
+      .muted { color: var(--muted); }
+      .faint { color: var(--faint); }
+      .small { font-size: 0.86rem; }
+      .section { margin-top: 44px; }
+      .section > h2 { font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; margin-bottom: 6px; }
+      .lead { font-size: 1.02rem; margin: 6px 0 18px; max-width: 62ch; }
+      .rule { border: 0; border-top: 1px solid var(--line); margin: 0; }
+
+      .fake-banner {
+        background: var(--block); color: #fff; border-radius: 10px;
+        font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase;
+        text-align: center; padding: 16px; margin-bottom: 28px; font-size: 1.05rem;
+      }
+
+      .hero { border: 1px solid var(--line-strong); border-radius: 14px; padding: 28px; background: var(--card); }
+      .verdict { display: inline-flex; align-items: center; gap: 12px; }
+      .verdict .badge {
+        font-size: 2.4rem; font-weight: 820; letter-spacing: -0.02em; line-height: 1;
+        padding: 8px 18px; border-radius: 10px;
+      }
+      .verdict.pass .badge { color: var(--pass); background: var(--pass-bg); border: 1px solid var(--pass-line); }
+      .verdict.block .badge { color: var(--block); background: var(--block-bg); border: 1px solid var(--block-line); }
+      .verdict .tag { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+      .coverage { font-size: 1.05rem; margin: 20px 0 0; max-width: 64ch; }
+      .headline { font-size: 1.18rem; font-weight: 560; margin-top: 18px; max-width: 64ch; letter-spacing: -0.01em; }
+      .headline + .headline { margin-top: 10px; }
+      .headline.unresolved { color: var(--muted); font-weight: 500; }
+      .hero .note { margin-top: 14px; }
+
+      .cards { display: grid; gap: 12px; margin-top: 4px; }
+      @media (min-width: 640px) { .cards.criteria { grid-template-columns: 1fr 1fr 1fr; } }
+      .card { border: 1px solid var(--line); border-radius: 12px; padding: 16px; background: var(--card); }
+      .card .status { display: inline-block; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; padding: 2px 8px; border-radius: 999px; }
+      .card.pass .status { color: var(--pass); background: var(--pass-bg); border: 1px solid var(--pass-line); }
+      .card.block .status { color: var(--block); background: var(--block-bg); border: 1px solid var(--block-line); }
+      .card.na .status { color: var(--muted); background: var(--sunken); border: 1px solid var(--line); }
+      .card h3 { font-size: 0.98rem; margin: 10px 0 4px; }
+      .card .means { color: var(--muted); font-size: 0.9rem; }
+      .card .io { margin-top: 10px; font-size: 0.9rem; }
+      .card .io .k { color: var(--faint); }
+
+      .cluster { border: 1px solid var(--line); border-radius: 12px; padding: 4px 16px; background: var(--card); margin-bottom: 10px; }
+      .cluster > summary { list-style: none; cursor: pointer; padding: 12px 0; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+      .cluster > summary::-webkit-details-marker { display: none; }
+      .cluster > summary::before { content: "▸"; color: var(--faint); font-size: 0.8em; }
+      .cluster[open] > summary::before { content: "▾"; }
+      .cluster .cname { font-weight: 600; }
+      .cluster .pill { font-size: 0.72rem; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line-strong); color: var(--muted); }
+      .cluster .pill.crit { color: var(--block); border-color: var(--block-line); background: var(--block-bg); }
+      .cluster .count { color: var(--muted); font-variant-numeric: tabular-nums; margin-left: auto; }
+      .exemplar { border-top: 1px solid var(--line); padding: 14px 0; }
+      .exemplar .lbl { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--faint); margin-bottom: 4px; }
+      .exemplar .lbl + pre, .exemplar .lbl + .val { margin-top: 0; margin-bottom: 12px; }
+      pre { background: var(--sunken); border: 1px solid var(--line); border-radius: 8px; padding: 12px; overflow-x: auto; white-space: pre-wrap; word-break: break-word; font-size: 0.84rem; margin: 0; }
+      .val { font-size: 0.9rem; }
+
+      table { border-collapse: collapse; width: 100%; font-size: 0.94rem; }
+      td, th { text-align: left; padding: 9px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+      th { font-weight: 500; color: var(--muted); width: 46%; }
+      td { font-variant-numeric: tabular-nums; }
+      tr:last-child td, tr:last-child th { border-bottom: 0; }
+
+      details.expander > summary { cursor: pointer; color: var(--muted); font-size: 0.9rem; padding: 6px 0; }
+      details.expander[open] > summary { color: var(--ink); }
+      .footer { margin-top: 52px; padding-top: 20px; border-top: 1px solid var(--line); color: var(--muted); font-size: 0.9rem; }
+      .footer .mono { word-break: break-all; }
+
+      .review { border: 1px solid var(--line-strong); border-radius: 12px; padding: 18px; margin-top: 24px; background: var(--sunken); }
+      .review label { display: block; margin: 8px 0; font-size: 0.9rem; }
+      .review input, .review select, .review textarea { width: 100%; border: 1px solid var(--line-strong); border-radius: 6px; padding: 7px; font: inherit; background: var(--card); color: var(--ink); }
+      .review button { border: 1px solid var(--accent); background: var(--accent); color: var(--bg); border-radius: 7px; cursor: pointer; font: inherit; padding: 7px 12px; margin-top: 6px; }
     </style>
     <script>{{ alpine_js|safe }}</script>
   </head>
@@ -31,40 +115,34 @@
       {% if payload.client_mode == "fake" %}
       <section class="fake-banner" role="alert">FAKE CLIENTS — NOT A CERTIFICATION</section>
       {% endif %}
-      <section class="banner">
-        <div class="verdict">{{ payload.verdict }}</div>
-        <p>{{ payload.coverage_sentence }}</p>
-        <p>
-          {{ payload.regressed_pairs.count }}/{{ payload.coverage.n }} sampled pairs regressed
-          ({{ payload.regressed_pairs.rate|pct }}) — {{ payload.regressed_pairs.by_source.assertion }}
-          by assertion, {{ payload.regressed_pairs.by_source.judge }} by judge verdict,
-          {{ payload.regressed_pairs.by_source.both }} by both.
-        </p>
-        {% if payload.regressed_pairs.unresolved %}
-        <p>
-          {{ payload.regressed_pairs.unresolved }}/{{ payload.coverage.n }} pairs unresolved
-          ({{ payload.regressed_pairs.unresolved_rate|pct }}) — the panel could not decide:
-          {{ payload.regressed_pairs.unresolved_only }} unresolved-only,
-          {{ payload.regressed_pairs.unresolved_also_regressed }} also assertion-flagged.
-          Counted conservatively toward the verdict, not as judge-flagged regressions.
-        </p>
+
+      {# (a) verdict + headlines #}
+      <section class="hero">
+        <div class="verdict {{ 'pass' if view.is_pass else 'block' }}">
+          <span class="badge">{{ payload.verdict }}</span>
+          <span class="tag">{{ payload.manifest.workload }} · candidate {{ payload.manifest.candidate.model }}</span>
+        </div>
+        <p class="coverage">{{ payload.coverage_sentence }}</p>
+        <p class="headline">{{ view.regressed_headline }}</p>
+        {% if view.unresolved_headline %}
+        <p class="headline unresolved">{{ view.unresolved_headline }}</p>
         {% endif %}
         {% if payload.coverage.zero_event_bound_sentence %}
-        <p>{{ payload.coverage.zero_event_bound_sentence }}</p>
+        <p class="note muted small">{{ payload.coverage.zero_event_bound_sentence }}</p>
         {% endif %}
         {% if payload.coverage.human_override_footnote %}
-        <p class="small">{{ payload.coverage.human_override_footnote }}</p>
+        <p class="note muted small">{{ payload.coverage.human_override_footnote }}</p>
         {% endif %}
       </section>
 
       {% if review_mode %}
-      <section class="panel" x-data="reviewPanel()" x-init="load()">
-        <h2>Review Queue</h2>
+      <section class="review" x-data="reviewPanel()" x-init="load()">
+        <h2>Review queue</h2>
         <p class="small muted" x-text="status"></p>
-        <h3>Unresolved Queue</h3>
+        <h3 class="small">Unresolved queue</h3>
         <template x-for="item in unresolved" :key="item.pair_id">
-          <div class="panel">
-            <strong x-text="item.pair_id"></strong>
+          <div class="card">
+            <strong class="mono small" x-text="item.pair_id"></strong>
             <p class="small">Current outcome: <span x-text="item.outcome"></span></p>
             <label>Override
               <select x-model="item.to_outcome">
@@ -76,31 +154,28 @@
               </select>
             </label>
             <label>Note <input x-model="item.note"></label>
-            <button type="button" x-on:click="override(item)">Save Override</button>
+            <button type="button" x-on:click="override(item)">Save override</button>
           </div>
         </template>
-        <p x-show="unresolved.length === 0">No unresolved judge outcomes.</p>
-
-        <h3>Promote Assertion</h3>
-        <div class="stack">
-          <label>ID <input x-model="draft.id"></label>
-          <label>Type
-            <select x-model="draft.type">
-              <option value="contains">contains</option>
-              <option value="not_contains">not_contains</option>
-              <option value="regex">regex</option>
-            </select>
-          </label>
-          <label>Severity
-            <select x-model="draft.severity">
-              <option value="critical">critical</option>
-              <option value="major">major</option>
-              <option value="minor">minor</option>
-            </select>
-          </label>
-          <label>Params JSON <textarea rows="3" x-model="draft.params"></textarea></label>
-          <button type="button" x-on:click="promote()">Promote Assertion</button>
-        </div>
+        <p class="small" x-show="unresolved.length === 0">No unresolved judge outcomes.</p>
+        <h3 class="small" style="margin-top:14px">Promote assertion</h3>
+        <label>ID <input x-model="draft.id"></label>
+        <label>Type
+          <select x-model="draft.type">
+            <option value="contains">contains</option>
+            <option value="not_contains">not_contains</option>
+            <option value="regex">regex</option>
+          </select>
+        </label>
+        <label>Severity
+          <select x-model="draft.severity">
+            <option value="critical">critical</option>
+            <option value="major">major</option>
+            <option value="minor">minor</option>
+          </select>
+        </label>
+        <label>Params JSON <textarea rows="3" x-model="draft.params"></textarea></label>
+        <button type="button" x-on:click="promote()">Promote assertion</button>
       </section>
       <script>
         function reviewPanel() {
@@ -112,21 +187,14 @@
               const response = await fetch("/api/run");
               const payload = await response.json();
               this.unresolved = payload.unresolved_queue.map((item) => ({
-                ...item,
-                note: "",
-                to_outcome: "equivalent",
+                ...item, note: "", to_outcome: "equivalent",
               }));
               this.status = `${payload.overrides.length} override rows recorded`;
             },
             async override(item) {
               const response = await fetch("/api/override", {
-                method: "POST",
-                headers: {"content-type": "application/json"},
-                body: JSON.stringify({
-                  note: item.note,
-                  pair_id: item.pair_id,
-                  to_outcome: item.to_outcome,
-                }),
+                method: "POST", headers: {"content-type": "application/json"},
+                body: JSON.stringify({note: item.note, pair_id: item.pair_id, to_outcome: item.to_outcome}),
               });
               this.status = await response.text();
               await this.load();
@@ -134,8 +202,7 @@
             async promote() {
               const params = JSON.parse(this.draft.params || "{}");
               const response = await fetch("/api/promote-assertion", {
-                method: "POST",
-                headers: {"content-type": "application/json"},
+                method: "POST", headers: {"content-type": "application/json"},
                 body: JSON.stringify({...this.draft, params}),
               });
               this.status = await response.text();
@@ -145,95 +212,109 @@
       </script>
       {% endif %}
 
-      <h2>Criteria</h2>
-      <table>
-        <thead><tr><th>Criterion</th><th>Input</th><th>Threshold</th><th>Status</th></tr></thead>
-        <tbody>
-          {% for criterion in payload.criteria %}
-          <tr>
-            <td>{{ criterion|criterion_label }}</td>
-            <td>{{ criterion|criterion_input }}</td>
-            <td>{{ criterion|criterion_threshold }}</td>
-            <td>{{ criterion|criterion_status }}</td>
-          </tr>
+      {# (b) three criteria as pass/fail cards #}
+      <section class="section">
+        <h2>Pass criteria</h2>
+        <p class="lead muted">Every criterion must pass for the run to certify. This one is a {{ payload.verdict }}.</p>
+        <div class="cards criteria">
+          {% for c in view.criteria %}
+          <div class="card {{ 'pass' if c.is_pass else ('block' if c.is_block else 'na') }}">
+            <span class="status">{{ c.status }}</span>
+            <h3>{{ c.label }}</h3>
+            <p class="means">{{ c.meaning }}</p>
+            <div class="io"><span class="k">Observed:</span> {{ c.input }}<br><span class="k">Allowed:</span> {{ c.threshold }}</div>
+          </div>
           {% endfor %}
-        </tbody>
-      </table>
-
-      <h2>Noise Floor And Candidate</h2>
-      <table>
-        <tbody>
-          <tr><th>Candidate rate</th><td>{{ payload.candidate_disagreement.rate|pct }}</td></tr>
-          <tr><th>Candidate CI</th><td>{{ payload.candidate_disagreement.lower|ci_pct }} to {{ payload.candidate_disagreement.upper|ci_pct }}</td></tr>
-          <tr><th>Noise floor</th><td>{% if payload.noise_floor %}{{ payload.noise_floor.rate|pct }}{% else %}Unavailable{% endif %}</td></tr>
-          <tr><th>Threshold τ</th><td>{{ payload.noise_floor_raw.tau|default(0.9)|decimal(2) }}</td></tr>
-          <tr><th>threshold_source</th><td>{{ payload.noise_floor_raw.threshold_source|default("unknown") }}</td></tr>
-          <tr><th>Mode</th><td>{{ payload.mode }}</td></tr>
-        </tbody>
-      </table>
-
-      <h2>Assertions</h2>
-      <div class="grid">
-        {% for severity, summary in payload.assertions_by_severity.items() %}
-        <div class="panel">
-          <h3>{{ severity }}</h3>
-          <p>Configured: {{ summary.configured|length }}</p>
-          <p>Failures: {{ summary.failures }}</p>
-        </div>
-        {% endfor %}
-      </div>
-
-      <h2>Judge Panel</h2>
-      <table>
-        <tbody>
-          <tr><th>Models</th><td>{{ payload.judge_panel.models|join(", ") }}</td></tr>
-          <tr><th>Families</th><td>{{ payload.judge_panel.families|join(", ") }}</td></tr>
-          <tr><th>Order swap</th><td>{{ payload.judge_panel.order_swap }}</td></tr>
-          <tr><th>Pairs judged</th><td>{{ payload.judge_panel.completed_pairs }}</td></tr>
-          <tr><th>Judge calls</th><td>{{ payload.judge_panel.judge_calls }}</td></tr>
-          <tr><th>Valid-verdict rate</th><td>{% if payload.judge_health.valid_verdict_rate is not none %}{{ payload.judge_health.valid_verdict_rate|pct }} ({{ payload.judge_health.valid_verdicts }}/{{ payload.judge_health.evaluations }}){% else %}n/a{% endif %}</td></tr>
-          <tr><th>Parse-failure rate</th><td>{% if payload.judge_health.parse_failure_rate is not none %}{{ payload.judge_health.parse_failure_rate|pct }} ({{ payload.judge_health.parse_failures }}){% else %}n/a{% endif %}</td></tr>
-          <tr><th>Inconsistency rate</th><td>{% if payload.judge_health.position_inconsistency_rate is not none %}{{ payload.judge_health.position_inconsistency_rate|pct }} ({{ payload.judge_health.position_inconsistencies }}){% else %}n/a{% endif %}</td></tr>
-          <tr><th>Agreement</th><td>{% if payload.judge_panel.agreement_percent is not none %}{{ payload.judge_panel.agreement_percent|pct_value }}{% else %}n/a — {{ payload.judge_panel.agreement_reason }}{% endif %}</td></tr>
-          <tr><th>Alpha</th><td>{% if payload.judge_panel.krippendorff_alpha is not none %}{{ payload.judge_panel.krippendorff_alpha|decimal(2) }}{% else %}n/a — {{ payload.judge_panel.krippendorff_alpha_reason }}{% endif %}</td></tr>
-          <tr><th>Calibration</th><td>{% if payload.judge_panel.calibration_accuracy is not none %}{{ payload.judge_panel.calibration_accuracy|pct }}{% else %}n/a — {{ payload.judge_panel.calibration_accuracy_reason }}{% endif %}</td></tr>
-        </tbody>
-      </table>
-      {% if payload.judge_health.context %}
-      <p class="small muted">{{ payload.judge_health.context }}</p>
-      {% endif %}
-
-      <h2>Clusters And Patches</h2>
-      {% for cluster in payload.clusters %}
-      <section class="panel" x-data="{open:false}">
-        <h3>{{ cluster.name }} <span class="small muted">({{ cluster.count }})</span></h3>
-        <p>{{ cluster.description }}</p>
-        <p class="small">Severity: {{ cluster.severity }}; share: {{ cluster.share_of_sampled|pct }}</p>
-        <button type="button" x-on:click="open=!open">Details</button>
-        <div x-show="open">
-          {% if cluster.reasons %}
-          <p class="small"><strong>Assertion failure reasons</strong></p>
-          <ul class="small">
-            {% for reason in cluster.reasons %}
-            <li>{{ reason }}</li>
-            {% endfor %}
-          </ul>
-          {% endif %}
-          {% for exemplar in cluster.exemplars %}
-          <pre>{{ exemplar }}</pre>
-          {% endfor %}
-          {% if cluster.patch_diff %}
-          <pre>{{ cluster.patch_diff }}</pre>
-          {% endif %}
         </div>
       </section>
-      {% else %}
-      <p>No regression clusters were recorded.</p>
-      {% endfor %}
 
-      <h2>Cost, Latency, And Tokens</h2>
-      <table>
-        <tbody>
+      {# (c) failure clusters — the evidence layer #}
+      <section class="section">
+        <h2>Failure clusters</h2>
+        <p class="lead muted">Regressions grouped by mechanism. Expand any cluster for the exact input, the candidate's failing response, and why it failed.</p>
+        {% if view.unresolved_reconciliation %}
+        <p class="small muted" style="margin-bottom:12px">{{ view.unresolved_reconciliation }}</p>
+        {% endif %}
+        {% for cluster in payload.clusters %}
+        {% set rows = cluster_evidence.get(cluster.cluster_id) %}
+        <details class="cluster">
+          <summary>
+            <span class="cname">{{ cluster.name }}</span>
+            <span class="pill {{ 'crit' if cluster.severity == 'worse_critical' else '' }}">{{ cluster.severity|severity_label }}</span>
+            <span class="count">{{ cluster.count }} pair{{ '' if cluster.count == 1 else 's' }} · {{ cluster.share_of_sampled|pct }}</span>
+          </summary>
+          {% if rows %}
+          {% for row in rows %}
+          <div class="exemplar">
+            <div class="lbl">Input prompt</div>
+            <pre>{{ row.prompt }}</pre>
+            <div class="lbl">Candidate response</div>
+            <pre>{{ row.response }}</pre>
+            {% if row.reason %}
+            <div class="lbl">Why it failed</div>
+            <p class="val mono">{{ row.reason }}</p>
+            {% else %}
+            <div class="lbl">Panel outcome</div>
+            <p class="val">{{ cluster.name }}</p>
+            {% endif %}
+          </div>
+          {% endfor %}
+          {% else %}
+          {% if cluster.reasons %}
+          <div class="exemplar"><div class="lbl">Why it failed</div>
+            {% for reason in cluster.reasons %}<p class="val mono">{{ reason }}</p>{% endfor %}
+          </div>
+          {% endif %}
+          {% for exemplar in cluster.exemplars %}
+          <div class="exemplar"><div class="lbl">Input prompt</div><pre>{{ exemplar }}</pre></div>
+          {% endfor %}
+          {% endif %}
+          {% if cluster.patch_diff %}
+          <div class="exemplar"><div class="lbl">Proposed patch</div><pre>{{ cluster.patch_diff }}</pre></div>
+          {% endif %}
+        </details>
+        {% else %}
+        <p class="muted">No regression clusters were recorded.</p>
+        {% endfor %}
+      </section>
+
+      {# (d) noise floor & stats #}
+      <section class="section">
+        <h2>Noise floor</h2>
+        <p class="lead">{{ view.noise_narrative }}</p>
+        <table>
+          <tr><th>Candidate disagreement rate</th><td>{{ view.noise.candidate_rate }}</td></tr>
+          <tr><th>Candidate 95% confidence interval</th><td>{{ view.noise.candidate_ci }}</td></tr>
+          <tr><th>Baseline self-disagreement (noise)</th><td>{{ view.noise.noise_rate }}</td></tr>
+          <tr><th>Similarity threshold</th><td>{{ view.noise.similarity_threshold }}</td></tr>
+          <tr><th>How the similarity bar was set</th><td>{{ view.noise.bar_source }}</td></tr>
+        </table>
+      </section>
+
+      {# (e) judge panel #}
+      <section class="section">
+        <h2>Judge panel</h2>
+        <p class="lead">{{ view.judge_narrative }}</p>
+        <table>
+          <tr><th>Judges</th><td>{{ payload.judge_panel.models|join(", ") }}</td></tr>
+          <tr><th>Pairs judged</th><td>{{ payload.judge_panel.completed_pairs }}</td></tr>
+          <tr><th>Valid-verdict rate</th><td>{% if payload.judge_health.valid_verdict_rate is not none %}{{ payload.judge_health.valid_verdict_rate|pct }} ({{ payload.judge_health.valid_verdicts }}/{{ payload.judge_health.evaluations }}){% else %}n/a{% endif %}</td></tr>
+          <tr><th>Unparseable-verdict rate</th><td>{% if payload.judge_health.parse_failure_rate is not none %}{{ payload.judge_health.parse_failure_rate|pct }} ({{ payload.judge_health.parse_failures }}){% else %}n/a{% endif %}</td></tr>
+          <tr><th>Order-inconsistency rate</th><td>{% if payload.judge_health.position_inconsistency_rate is not none %}{{ payload.judge_health.position_inconsistency_rate|pct }} ({{ payload.judge_health.position_inconsistencies }}){% else %}n/a{% endif %}</td></tr>
+          <tr><th>Inter-judge agreement</th><td>{% if payload.judge_panel.agreement_percent is not none %}{{ payload.judge_panel.agreement_percent|pct_value }}{% else %}n/a — {{ payload.judge_panel.agreement_reason }}{% endif %}</td></tr>
+          <tr><th>Krippendorff's alpha</th><td>{% if payload.judge_panel.krippendorff_alpha is not none %}{{ payload.judge_panel.krippendorff_alpha|decimal(2) }}{% else %}n/a — {{ payload.judge_panel.krippendorff_alpha_reason }}{% endif %}</td></tr>
+          <tr><th>Human calibration accuracy</th><td>{% if payload.judge_panel.calibration_accuracy is not none %}{{ payload.judge_panel.calibration_accuracy|pct }}{% else %}n/a — {{ payload.judge_panel.calibration_accuracy_reason }}{% endif %}</td></tr>
+        </table>
+        {% if payload.judge_health.context %}
+        <p class="small muted" style="margin-top:12px">{{ payload.judge_health.context }}</p>
+        {% endif %}
+      </section>
+
+      {# (f) cost & latency #}
+      <section class="section">
+        <h2>Cost &amp; latency</h2>
+        <p class="lead muted">Per-response deltas between the candidate and the baseline.</p>
+        <table>
           <tr><th>Baseline mean latency</th><td>{{ payload.cost_latency.baseline_mean_latency_ms|ms }}</td></tr>
           <tr><th>Candidate mean latency</th><td>{{ payload.cost_latency.candidate_mean_latency_ms|ms }}</td></tr>
           <tr><th>Latency delta</th><td>{{ payload.cost_latency.latency_delta_ms|ms }}</td></tr>
@@ -241,32 +322,59 @@
           <tr><th>Candidate mean output tokens</th><td>{{ payload.cost_latency.candidate_mean_output_tokens|decimal(1) }}</td></tr>
           <tr><th>Output length inflation</th><td>{{ payload.cost_latency.output_length_inflation|multiplier }}</td></tr>
           <tr><th>USD delta</th><td>{{ payload.cost_latency.usd_delta|usd }}</td></tr>
-        </tbody>
-      </table>
+        </table>
+      </section>
 
-      <h2>Scope And Exclusions</h2>
-      <table>
-        <tbody>
+      {# (g) scope & dedup disclosure #}
+      <section class="section">
+        <h2>Scope &amp; exclusions</h2>
+        <p class="lead muted">What this certificate covers, and what was collapsed before sampling.</p>
+        <table>
           <tr><th>Workload</th><td>{{ payload.scope.workload }}</td></tr>
           <tr><th>Traces collected</th><td>{{ payload.coverage.n_collected }}</td></tr>
-          <tr><th>After dedup</th><td>{{ payload.coverage.n_after_dedup }}</td></tr>
+          <tr><th>After near-duplicate dedup</th><td>{{ payload.coverage.n_after_dedup }}</td></tr>
           <tr><th>Dedup collapsed</th><td>{{ payload.coverage.dedup_collapsed }} (jaccard ≥ {{ payload.coverage.dedup_method.jaccard_threshold }}, shingle {{ payload.coverage.dedup_method.shingle_size }})</td></tr>
           <tr><th>Sample size</th><td>{{ payload.coverage.n }}</td></tr>
           <tr><th>Sampling method</th><td>{{ payload.coverage.sampling_method }}</td></tr>
-          <tr><th>Exclusion percent</th><td>{{ payload.coverage.exclusion_percent|pct_value }}</td></tr>
-          <tr><th>Scrubbed</th><td>{{ payload.scope.scrubbed }}</td></tr>
-        </tbody>
-      </table>
+          <tr><th>Excluded</th><td>{{ payload.coverage.exclusion_percent|pct_value }}</td></tr>
+          <tr><th>PII scrubbed</th><td>{{ payload.scope.scrubbed }}</td></tr>
+        </table>
+      </section>
 
-      <h2>Signature</h2>
-      <p class="small">Verify offline with <code>acsi verify cert.json</code>.</p>
-      <table>
-        <tbody>
-          <tr><th>Algorithm</th><td>{{ cert.header.algo }}</td></tr>
-          <tr><th>Public key</th><td>{{ cert.header.public_key }}</td></tr>
-          <tr><th>Signature</th><td>{{ cert.signature }}</td></tr>
-        </tbody>
-      </table>
+      {# raw values for auditors — the only place exact technical keys appear in text #}
+      <section class="section">
+        <details class="expander rawview">
+          <summary>Raw technical values (for auditors)</summary>
+          <table>
+            <tr><th>criteria</th><td class="mono">{% for c in payload.criteria %}{{ c.id }}={{ c.passed }}{{ "; " if not loop.last }}{% endfor %}</td></tr>
+            <tr><th>candidate_regression_rate</th><td class="mono">{{ payload.candidate_regression_rate|default(0)|decimal(6) }}</td></tr>
+            <tr><th>noise_floor_raw.tau</th><td class="mono">{{ payload.noise_floor_raw.tau|default(0.9)|decimal(4) }}</td></tr>
+            <tr><th>noise_floor_raw.threshold_source</th><td class="mono">{{ payload.noise_floor_raw.threshold_source|default("unknown") }}</td></tr>
+            <tr><th>mode</th><td class="mono">{{ payload.mode }}</td></tr>
+            <tr><th>client_mode</th><td class="mono">{{ payload.client_mode }}</td></tr>
+            <tr><th>engine_version</th><td class="mono">{{ payload.engine_version }}</td></tr>
+            <tr><th>config_hash</th><td class="mono">{{ payload.config_hash.value if payload.config_hash is mapping else payload.config_hash }}</td></tr>
+            <tr><th>run_id</th><td class="mono">{{ payload.run_id }}</td></tr>
+            {% for cluster in payload.clusters %}
+            <tr><th>cluster {{ cluster.cluster_id }}</th><td class="mono">severity={{ cluster.severity }}, share={{ cluster.share_of_sampled|decimal(6) }}</td></tr>
+            {% endfor %}
+          </table>
+          <p class="small muted" style="margin-top:10px">Full signed payload is embedded below as JSON for machine verification.</p>
+        </details>
+      </section>
+
+      {# (h) signature footer #}
+      <div class="footer">
+        <p>Verified: {{ cert.header.algo }} — verify offline with <code>acsi verify cert.json</code>.
+        Engine {{ payload.engine_version }} · run {{ payload.run_id }} · issued {{ cert.header.issued_at }}.</p>
+        <details class="expander">
+          <summary>Signature &amp; public key</summary>
+          <p class="small faint" style="margin-top:8px">Public key</p>
+          <p class="mono small">{{ cert.header.public_key }}</p>
+          <p class="small faint" style="margin-top:8px">Signature</p>
+          <p class="mono small">{{ cert.signature }}</p>
+        </details>
+      </div>
 
       <script type="application/json" id="acsi-certificate">{{ certificate_json }}</script>
     </main>

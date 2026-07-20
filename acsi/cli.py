@@ -1344,6 +1344,7 @@ def run(
             report_hash = render_report(
                 cert_result.cert,
                 output_path=active_run_dir / "report.html",
+                evidence_dir=active_run_dir,
             )
             _mark_stage(
                 run_path,
@@ -2069,7 +2070,11 @@ def cert(
             run_dir=active_run_dir,
             manifest_path=manifest,
         )
-        report_hash = render_report(result.cert, output_path=active_run_dir / "report.html")
+        report_hash = render_report(
+            result.cert,
+            output_path=active_run_dir / "report.html",
+            evidence_dir=active_run_dir,
+        )
     except (BannedLanguageError, OSError, ValueError) as exc:
         _fail(str(exc), json_output)
 
@@ -2177,7 +2182,11 @@ def rebuild_cert(
             manifest_path=manifest,
             client_mode=client_mode,
         )
-        report_hash = render_report(cert_result.cert, output_path=dest_dir / "report.html")
+        report_hash = render_report(
+            cert_result.cert,
+            output_path=dest_dir / "report.html",
+            evidence_dir=dest_dir,
+        )
     except (
         BannedLanguageError,
         CertificateVerificationError,
