@@ -3,115 +3,153 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>ACSI Certificate</title>
+    <title>acsi — Certification Report</title>
     <style>
+      {% if font_display %}@font-face { font-family: "Rajdhani"; font-style: normal; font-weight: 500; font-display: swap; src: url({{ font_display }}) format("woff2"); }{% endif %}
+      {% if font_heading %}@font-face { font-family: "Plus Jakarta Sans"; font-style: normal; font-weight: 400 700; font-display: swap; src: url({{ font_heading }}) format("woff2"); }{% endif %}
       :root {
-        --ink: #191b1f; --muted: #6b7280; --faint: #9aa1ab;
-        --bg: #ffffff; --card: #ffffff; --sunken: #f7f8fa;
-        --line: #e7e9ee; --line-strong: #d3d7de;
-        --pass: #15803d; --pass-bg: #f0fdf4; --pass-line: #bbf7d0;
-        --block: #c0362c; --block-bg: #fef2f2; --block-line: #fecaca;
-        --accent: #191b1f;
+        --ink: #18181b; --ink-2: #52525b; --ink-3: #71717a; --faint: #8a8f98;
+        --bg: #ffffff; --card: #ffffff; --sunken: #f6f6f8;
+        --line: #e7e7ea; --line-strong: #d4d4d8;
+        --accent: #5b5bd6; --accent-soft: #ececfb; --accent-line: #dedefa;
+        --pass: #15803d; --pass-soft: #e7f7ec; --pass-line: #bfe6cb;
+        --block: #c0362c; --block-soft: #fbeae7; --block-line: #f0cabf;
+        --font-display: "Rajdhani", system-ui, sans-serif;
+        --font-heading: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+        --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
       }
       @media (prefers-color-scheme: dark) {
         :root {
-          --ink: #e9ebef; --muted: #9ba2ad; --faint: #6b7280;
-          --bg: #0f1114; --card: #16181d; --sunken: #1b1e24;
-          --line: #262a31; --line-strong: #333842;
-          --pass: #4ade80; --pass-bg: #10221a; --pass-line: #1f4d34;
-          --block: #f87171; --block-bg: #241414; --block-line: #4d2020;
-          --accent: #e9ebef;
+          --ink: #e9ebef; --ink-2: #9ba2ad; --ink-3: #868d97; --faint: #6b7280;
+          --bg: #0e0e11; --card: #16171b; --sunken: #1a1b20;
+          --line: #26272d; --line-strong: #34363d;
+          --accent: #9a9af2; --accent-soft: #1e1e33; --accent-line: #33335a;
+          --pass: #4ade80; --pass-soft: #10231a; --pass-line: #1f4d34;
+          --block: #f2867d; --block-soft: #251413; --block-line: #4d211c;
         }
       }
-      * { box-sizing: border-box; }
+      * { box-sizing: border-box; border-radius: 0 !important; }
       html { -webkit-text-size-adjust: 100%; }
       body {
         color: var(--ink); background: var(--bg); margin: 0;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-        line-height: 1.55; font-size: 16px;
+        font-family: var(--font-body); line-height: 1.55; font-size: 16px;
         -webkit-font-smoothing: antialiased;
       }
-      main { max-width: 860px; margin: 0 auto; padding: 40px 24px 72px; }
-      h1, h2, h3 { line-height: 1.25; margin: 0; font-weight: 640; letter-spacing: -0.01em; }
+      main { max-width: 860px; margin: 0 auto; padding: 32px 24px 72px; }
+      h1, h2, h3 { line-height: 1.22; margin: 0; font-family: var(--font-heading); font-weight: 640; letter-spacing: -0.01em; }
       p { margin: 0; }
       a { color: inherit; }
       code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.86em; }
-      .muted { color: var(--muted); }
+      .muted { color: var(--ink-2); }
       .faint { color: var(--faint); }
       .small { font-size: 0.86rem; }
-      .section { margin-top: 44px; }
-      .section > h2 { font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; margin-bottom: 6px; }
-      .lead { font-size: 1.02rem; margin: 6px 0 18px; max-width: 62ch; }
-      .rule { border: 0; border-top: 1px solid var(--line); margin: 0; }
+      .eyebrow { font-family: var(--font-display); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.14em; color: var(--ink-3); font-weight: 600; }
 
-      .fake-banner {
-        background: var(--block); color: #fff; border-radius: 10px;
-        font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase;
-        text-align: center; padding: 16px; margin-bottom: 28px; font-size: 1.05rem;
-      }
+      .brand { display: flex; align-items: baseline; gap: 14px; padding-bottom: 20px; border-bottom: 2px solid var(--ink); flex-wrap: wrap; }
+      .wordmark { font-family: var(--font-display); font-weight: 500; font-size: 30px; letter-spacing: 0.08em; text-transform: lowercase; color: var(--ink); line-height: 1; }
+      .brand-meta { margin-left: auto; text-align: right; }
+      .brand-title { font-family: var(--font-display); text-transform: uppercase; letter-spacing: 0.16em; font-size: 0.82rem; color: var(--ink-2); font-weight: 600; }
+      .brand-sub { font-size: 0.82rem; color: var(--faint); margin-top: 2px; }
 
-      .hero { border: 1px solid var(--line-strong); border-radius: 14px; padding: 28px; background: var(--card); }
-      .verdict { display: inline-flex; align-items: center; gap: 12px; }
-      .verdict .badge {
-        font-size: 2.4rem; font-weight: 820; letter-spacing: -0.02em; line-height: 1;
-        padding: 8px 18px; border-radius: 10px;
-      }
-      .verdict.pass .badge { color: var(--pass); background: var(--pass-bg); border: 1px solid var(--pass-line); }
-      .verdict.block .badge { color: var(--block); background: var(--block-bg); border: 1px solid var(--block-line); }
-      .verdict .tag { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+      .section { margin-top: 40px; }
+      .section > .eyebrow { display: block; margin-bottom: 8px; }
+      .lead { font-size: 1.0rem; margin: 0 0 18px; max-width: 64ch; color: var(--ink); }
+      .lead.muted { color: var(--ink-2); }
+
+      .fake-banner { background: var(--block); color: #fff; font-family: var(--font-display); font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; text-align: center; padding: 15px; margin: 22px 0 0; font-size: 1.05rem; }
+
+      .hero { border: 1px solid var(--line-strong); padding: 26px; margin-top: 24px; background: var(--card); }
+      .verdict { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+      .verdict .badge { font-family: var(--font-heading); font-size: 2.3rem; font-weight: 800; letter-spacing: -0.02em; line-height: 1; padding: 8px 18px; }
+      .verdict.pass .badge { color: var(--pass); background: var(--pass-soft); border: 1px solid var(--pass-line); }
+      .verdict.block .badge { color: var(--block); background: var(--block-soft); border: 1px solid var(--block-line); }
+      .verdict .tag { font-family: var(--font-display); font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-2); }
       .coverage { font-size: 1.05rem; margin: 20px 0 0; max-width: 64ch; }
-      .headline { font-size: 1.18rem; font-weight: 560; margin-top: 18px; max-width: 64ch; letter-spacing: -0.01em; }
-      .headline + .headline { margin-top: 10px; }
-      .headline.unresolved { color: var(--muted); font-weight: 500; }
+      .coverage-plain { color: var(--ink-2); margin-top: 8px; max-width: 64ch; }
+      .headline { font-size: 1.16rem; font-weight: 560; margin-top: 18px; max-width: 64ch; letter-spacing: -0.01em; }
+      .headline.unresolved { color: var(--ink-2); font-weight: 500; font-size: 1.04rem; }
       .hero .note { margin-top: 14px; }
 
-      .cards { display: grid; gap: 12px; margin-top: 4px; }
-      @media (min-width: 640px) { .cards.criteria { grid-template-columns: 1fr 1fr 1fr; } }
-      .card { border: 1px solid var(--line); border-radius: 12px; padding: 16px; background: var(--card); }
-      .card .status { display: inline-block; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; padding: 2px 8px; border-radius: 999px; }
-      .card.pass .status { color: var(--pass); background: var(--pass-bg); border: 1px solid var(--pass-line); }
-      .card.block .status { color: var(--block); background: var(--block-bg); border: 1px solid var(--block-line); }
-      .card.na .status { color: var(--muted); background: var(--sunken); border: 1px solid var(--line); }
-      .card h3 { font-size: 0.98rem; margin: 10px 0 4px; }
-      .card .means { color: var(--muted); font-size: 0.9rem; }
-      .card .io { margin-top: 10px; font-size: 0.9rem; }
-      .card .io .k { color: var(--faint); }
+      .howto { border-left: 3px solid var(--accent); background: var(--accent-soft); padding: 16px 18px; margin-top: 22px; }
+      .howto .eyebrow { color: var(--accent); margin-bottom: 8px; display: block; }
+      .howto p { color: var(--ink); font-size: 0.94rem; max-width: 66ch; }
+      .howto p + p { margin-top: 7px; }
+      @media (prefers-color-scheme: dark) { .howto p { color: var(--ink); } }
 
-      .cluster { border: 1px solid var(--line); border-radius: 12px; padding: 4px 16px; background: var(--card); margin-bottom: 10px; }
-      .cluster > summary { list-style: none; cursor: pointer; padding: 12px 0; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+      .cards { display: grid; gap: 12px; }
+      @media (min-width: 660px) { .cards.criteria { grid-template-columns: 1fr 1fr 1fr; } }
+      .card { border: 1px solid var(--line-strong); padding: 16px; background: var(--card); }
+      .card .status { display: inline-block; font-family: var(--font-display); font-size: 0.74rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; padding: 2px 9px; }
+      .card.pass .status { color: var(--pass); background: var(--pass-soft); border: 1px solid var(--pass-line); }
+      .card.block .status { color: var(--block); background: var(--block-soft); border: 1px solid var(--block-line); }
+      .card.na .status { color: var(--ink-2); background: var(--sunken); border: 1px solid var(--line); }
+      .card h3 { font-size: 0.98rem; margin: 10px 0 5px; }
+      .card .means { color: var(--ink-2); font-size: 0.88rem; }
+      .card .io { margin-top: 11px; font-size: 0.88rem; border-top: 1px solid var(--line); padding-top: 10px; }
+      .card .io .k { font-family: var(--font-display); text-transform: uppercase; font-size: 0.68rem; letter-spacing: 0.06em; color: var(--faint); }
+
+      .cluster { border: 1px solid var(--line-strong); padding: 2px 16px; background: var(--card); margin-bottom: 10px; }
+      .cluster > summary { list-style: none; cursor: pointer; padding: 13px 0; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
       .cluster > summary::-webkit-details-marker { display: none; }
-      .cluster > summary::before { content: "▸"; color: var(--faint); font-size: 0.8em; }
-      .cluster[open] > summary::before { content: "▾"; }
-      .cluster .cname { font-weight: 600; }
-      .cluster .pill { font-size: 0.72rem; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line-strong); color: var(--muted); }
-      .cluster .pill.crit { color: var(--block); border-color: var(--block-line); background: var(--block-bg); }
-      .cluster .count { color: var(--muted); font-variant-numeric: tabular-nums; margin-left: auto; }
+      .cluster > summary::before { content: "+"; color: var(--faint); font-family: var(--font-display); font-weight: 600; }
+      .cluster[open] > summary::before { content: "–"; }
+      .cluster .cname { font-weight: 600; font-family: var(--font-heading); }
+      .cluster .pill { font-family: var(--font-display); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; padding: 2px 8px; border: 1px solid var(--line-strong); color: var(--ink-2); }
+      .cluster .pill.crit { color: var(--block); border-color: var(--block-line); background: var(--block-soft); }
+      .cluster .count { color: var(--ink-2); font-variant-numeric: tabular-nums; margin-left: auto; font-size: 0.9rem; }
       .exemplar { border-top: 1px solid var(--line); padding: 14px 0; }
-      .exemplar .lbl { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--faint); margin-bottom: 4px; }
+      .exemplar .lbl { font-family: var(--font-display); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--faint); margin-bottom: 4px; }
       .exemplar .lbl + pre, .exemplar .lbl + .val { margin-top: 0; margin-bottom: 12px; }
-      pre { background: var(--sunken); border: 1px solid var(--line); border-radius: 8px; padding: 12px; overflow-x: auto; white-space: pre-wrap; word-break: break-word; font-size: 0.84rem; margin: 0; }
+      pre { background: var(--sunken); border: 1px solid var(--line); padding: 12px; overflow-x: auto; white-space: pre-wrap; word-break: break-word; font-size: 0.83rem; margin: 0; }
       .val { font-size: 0.9rem; }
 
       table { border-collapse: collapse; width: 100%; font-size: 0.94rem; }
-      td, th { text-align: left; padding: 9px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
-      th { font-weight: 500; color: var(--muted); width: 46%; }
-      td { font-variant-numeric: tabular-nums; }
+      td, th { text-align: left; padding: 10px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+      th { font-weight: 500; color: var(--ink); width: 50%; padding-right: 16px; }
+      th .def { display: block; font-weight: 400; color: var(--faint); font-size: 0.78rem; margin-top: 2px; line-height: 1.4; }
+      td { font-variant-numeric: tabular-nums; color: var(--ink); }
       tr:last-child td, tr:last-child th { border-bottom: 0; }
 
-      details.expander > summary { cursor: pointer; color: var(--muted); font-size: 0.9rem; padding: 6px 0; }
+      details.expander > summary { cursor: pointer; color: var(--ink-2); font-family: var(--font-display); text-transform: uppercase; letter-spacing: 0.08em; font-size: 0.78rem; padding: 6px 0; }
       details.expander[open] > summary { color: var(--ink); }
-      .footer { margin-top: 52px; padding-top: 20px; border-top: 1px solid var(--line); color: var(--muted); font-size: 0.9rem; }
+      .footer { margin-top: 52px; padding-top: 18px; border-top: 2px solid var(--ink); color: var(--ink-2); font-size: 0.88rem; }
       .footer .mono { word-break: break-all; }
+      .footer .wordmark { font-size: 18px; color: var(--ink-2); }
 
-      .review { border: 1px solid var(--line-strong); border-radius: 12px; padding: 18px; margin-top: 24px; background: var(--sunken); }
+      .review { border: 1px solid var(--line-strong); padding: 18px; margin-top: 24px; background: var(--sunken); }
       .review label { display: block; margin: 8px 0; font-size: 0.9rem; }
-      .review input, .review select, .review textarea { width: 100%; border: 1px solid var(--line-strong); border-radius: 6px; padding: 7px; font: inherit; background: var(--card); color: var(--ink); }
-      .review button { border: 1px solid var(--accent); background: var(--accent); color: var(--bg); border-radius: 7px; cursor: pointer; font: inherit; padding: 7px 12px; margin-top: 6px; }
+      .review input, .review select, .review textarea { width: 100%; border: 1px solid var(--line-strong); padding: 7px; font: inherit; background: var(--card); color: var(--ink); }
+      .review button { border: 1px solid var(--ink); background: var(--ink); color: var(--bg); cursor: pointer; font: inherit; padding: 7px 14px; margin-top: 8px; font-family: var(--font-display); text-transform: uppercase; letter-spacing: 0.06em; font-size: 0.8rem; }
+
+      @media (max-width: 460px) {
+        main { padding: 24px 16px 56px; }
+        .verdict .badge { font-size: 1.9rem; }
+        th, td { display: block; width: auto; }
+        th { border-bottom: 0; padding-bottom: 0; }
+        td { padding-top: 2px; }
+        tr { display: block; padding: 8px 0; border-bottom: 1px solid var(--line); }
+        tr:last-child { border-bottom: 0; }
+      }
+      @media print {
+        :root { --bg: #fff; --card: #fff; --ink: #111; --ink-2: #444; }
+        body { color: #111; background: #fff; }
+        .section, .card, .cluster, .hero, .howto { break-inside: avoid; }
+        details.expander, .review { display: none; }
+        a[href]::after { content: ""; }
+      }
     </style>
     <script>{{ alpine_js|safe }}</script>
   </head>
   <body>
     <main>
+      <header class="brand">
+        <span class="wordmark">acsi</span>
+        <div class="brand-meta">
+          <div class="brand-title">Certification Report</div>
+          <div class="brand-sub">{{ payload.manifest.workload }} · issued {{ cert.header.issued_at }}</div>
+        </div>
+      </header>
+
       {% if payload.client_mode == "fake" %}
       <section class="fake-banner" role="alert">FAKE CLIENTS — NOT A CERTIFICATION</section>
       {% endif %}
@@ -120,9 +158,12 @@
       <section class="hero">
         <div class="verdict {{ 'pass' if view.is_pass else 'block' }}">
           <span class="badge">{{ payload.verdict }}</span>
-          <span class="tag">{{ payload.manifest.workload }} · candidate {{ payload.manifest.candidate.model }}</span>
+          <span class="tag">candidate {{ payload.manifest.candidate.model }} vs. baseline {{ payload.manifest.baseline.model }}</span>
         </div>
         <p class="coverage">{{ payload.coverage_sentence }}</p>
+        {% if view.coverage_plain %}
+        <p class="coverage-plain">{{ view.coverage_plain }}</p>
+        {% endif %}
         <p class="headline">{{ view.regressed_headline }}</p>
         {% if view.unresolved_headline %}
         <p class="headline unresolved">{{ view.unresolved_headline }}</p>
@@ -135,9 +176,18 @@
         {% endif %}
       </section>
 
+      {# How to read this certificate #}
+      <section class="howto">
+        <span class="eyebrow">How to read this certificate</span>
+        <p>A <strong>pair</strong> is one real input answered twice — once by the current model (baseline), once by the candidate you are considering.</p>
+        <p>A pair <strong>regressed</strong> when the candidate's answer broke a required rule (an assertion) or a panel of independent judges graded it worse than the baseline's.</p>
+        <p>A pair is <strong>unresolved</strong> when the judges could not reach enough valid, agreeing votes to decide it; these are counted against the candidate so the verdict stays on the safe side.</p>
+        <p><strong>BLOCK</strong> means do not switch to the candidate until the named failures below are fixed. <strong>PASS</strong> means the candidate is safe to switch to for the inputs tested here.</p>
+      </section>
+
       {% if review_mode %}
       <section class="review" x-data="reviewPanel()" x-init="load()">
-        <h2>Review queue</h2>
+        <span class="eyebrow">Review queue</span>
         <p class="small muted" x-text="status"></p>
         <h3 class="small">Unresolved queue</h3>
         <template x-for="item in unresolved" :key="item.pair_id">
@@ -214,15 +264,15 @@
 
       {# (b) three criteria as pass/fail cards #}
       <section class="section">
-        <h2>Pass criteria</h2>
-        <p class="lead muted">Every criterion must pass for the run to certify. This one is a {{ payload.verdict }}.</p>
+        <span class="eyebrow">Pass criteria</span>
+        <p class="lead muted">All three must pass to certify. This run is a {{ payload.verdict }}.</p>
         <div class="cards criteria">
           {% for c in view.criteria %}
           <div class="card {{ 'pass' if c.is_pass else ('block' if c.is_block else 'na') }}">
             <span class="status">{{ c.status }}</span>
             <h3>{{ c.label }}</h3>
             <p class="means">{{ c.meaning }}</p>
-            <div class="io"><span class="k">Observed:</span> {{ c.input }}<br><span class="k">Allowed:</span> {{ c.threshold }}</div>
+            <div class="io"><span class="k">Observed</span><br>{{ c.input }}<br><span class="k" style="margin-top:6px;display:inline-block">Allowed</span><br>{{ c.threshold }}</div>
           </div>
           {% endfor %}
         </div>
@@ -230,7 +280,7 @@
 
       {# (c) failure clusters — the evidence layer #}
       <section class="section">
-        <h2>Failure clusters</h2>
+        <span class="eyebrow">Failure clusters</span>
         <p class="lead muted">Regressions grouped by mechanism. Expand any cluster for the exact input, the candidate's failing response, and why it failed.</p>
         {% if view.unresolved_reconciliation %}
         <p class="small muted" style="margin-bottom:12px">{{ view.unresolved_reconciliation }}</p>
@@ -280,30 +330,25 @@
 
       {# (d) noise floor & stats #}
       <section class="section">
-        <h2>Noise floor</h2>
+        <span class="eyebrow">Noise floor</span>
         <p class="lead">{{ view.noise_narrative }}</p>
         <table>
-          <tr><th>Candidate disagreement rate</th><td>{{ view.noise.candidate_rate }}</td></tr>
-          <tr><th>Candidate 95% confidence interval</th><td>{{ view.noise.candidate_ci }}</td></tr>
-          <tr><th>Baseline self-disagreement (noise)</th><td>{{ view.noise.noise_rate }}</td></tr>
-          <tr><th>Similarity threshold</th><td>{{ view.noise.similarity_threshold }}</td></tr>
-          <tr><th>How the similarity bar was set</th><td>{{ view.noise.bar_source }}</td></tr>
+          <tr><th>Candidate disagreement rate<span class="def">share of inputs where the candidate's answer differed enough to count</span></th><td>{{ view.noise.candidate_rate }}</td></tr>
+          <tr><th>Candidate 95% confidence interval<span class="def">statistical range that rate could fall in</span></th><td>{{ view.noise.candidate_ci }}</td></tr>
+          <tr><th>Baseline self-disagreement<span class="def">how much the current model already varies when given the very same input twice — the noise bar</span></th><td>{{ view.noise.noise_rate }}</td></tr>
+          <tr><th>How the noise bar was set<span class="def">calibrated from repeated baseline runs, or a fixed default</span></th><td>{{ view.noise.bar_source }}</td></tr>
         </table>
       </section>
 
       {# (e) judge panel #}
       <section class="section">
-        <h2>Judge panel</h2>
+        <span class="eyebrow">Judge panel</span>
         <p class="lead">{{ view.judge_narrative }}</p>
         <table>
           <tr><th>Judges</th><td>{{ payload.judge_panel.models|join(", ") }}</td></tr>
           <tr><th>Pairs judged</th><td>{{ payload.judge_panel.completed_pairs }}</td></tr>
-          <tr><th>Valid-verdict rate</th><td>{% if payload.judge_health.valid_verdict_rate is not none %}{{ payload.judge_health.valid_verdict_rate|pct }} ({{ payload.judge_health.valid_verdicts }}/{{ payload.judge_health.evaluations }}){% else %}n/a{% endif %}</td></tr>
-          <tr><th>Unparseable-verdict rate</th><td>{% if payload.judge_health.parse_failure_rate is not none %}{{ payload.judge_health.parse_failure_rate|pct }} ({{ payload.judge_health.parse_failures }}){% else %}n/a{% endif %}</td></tr>
-          <tr><th>Order-inconsistency rate</th><td>{% if payload.judge_health.position_inconsistency_rate is not none %}{{ payload.judge_health.position_inconsistency_rate|pct }} ({{ payload.judge_health.position_inconsistencies }}){% else %}n/a{% endif %}</td></tr>
-          <tr><th>Inter-judge agreement</th><td>{% if payload.judge_panel.agreement_percent is not none %}{{ payload.judge_panel.agreement_percent|pct_value }}{% else %}n/a — {{ payload.judge_panel.agreement_reason }}{% endif %}</td></tr>
-          <tr><th>Krippendorff's alpha</th><td>{% if payload.judge_panel.krippendorff_alpha is not none %}{{ payload.judge_panel.krippendorff_alpha|decimal(2) }}{% else %}n/a — {{ payload.judge_panel.krippendorff_alpha_reason }}{% endif %}</td></tr>
-          <tr><th>Human calibration accuracy</th><td>{% if payload.judge_panel.calibration_accuracy is not none %}{{ payload.judge_panel.calibration_accuracy|pct }}{% else %}n/a — {{ payload.judge_panel.calibration_accuracy_reason }}{% endif %}</td></tr>
+          <tr><th>Valid-verdict rate<span class="def">share of judge calls that returned a usable verdict; the rest abstained</span></th><td>{% if payload.judge_health.valid_verdict_rate is not none %}{{ payload.judge_health.valid_verdict_rate|pct }} ({{ payload.judge_health.valid_verdicts }}/{{ payload.judge_health.evaluations }}){% else %}n/a{% endif %}</td></tr>
+          <tr><th>Inter-judge agreement<span class="def">how often the judges gave the same verdict on a pair</span></th><td>{% if payload.judge_panel.agreement_percent is not none %}{{ payload.judge_panel.agreement_percent|pct_value }}{% else %}n/a — {{ payload.judge_panel.agreement_reason }}{% endif %}</td></tr>
         </table>
         {% if payload.judge_health.context %}
         <p class="small muted" style="margin-top:12px">{{ payload.judge_health.context }}</p>
@@ -312,32 +357,32 @@
 
       {# (f) cost & latency #}
       <section class="section">
-        <h2>Cost &amp; latency</h2>
-        <p class="lead muted">Per-response deltas between the candidate and the baseline.</p>
+        <span class="eyebrow">Cost &amp; latency</span>
+        <p class="lead muted">Per-response differences between the candidate and the baseline. Positive deltas mean the candidate is slower, longer, or costlier.</p>
         <table>
           <tr><th>Baseline mean latency</th><td>{{ payload.cost_latency.baseline_mean_latency_ms|ms }}</td></tr>
           <tr><th>Candidate mean latency</th><td>{{ payload.cost_latency.candidate_mean_latency_ms|ms }}</td></tr>
-          <tr><th>Latency delta</th><td>{{ payload.cost_latency.latency_delta_ms|ms }}</td></tr>
+          <tr><th>Latency delta<span class="def">candidate minus baseline response time</span></th><td>{{ payload.cost_latency.latency_delta_ms|ms }}</td></tr>
           <tr><th>Baseline mean output tokens</th><td>{{ payload.cost_latency.baseline_mean_output_tokens|decimal(1) }}</td></tr>
           <tr><th>Candidate mean output tokens</th><td>{{ payload.cost_latency.candidate_mean_output_tokens|decimal(1) }}</td></tr>
-          <tr><th>Output length inflation</th><td>{{ payload.cost_latency.output_length_inflation|multiplier }}</td></tr>
-          <tr><th>USD delta</th><td>{{ payload.cost_latency.usd_delta|usd }}</td></tr>
+          <tr><th>Output length inflation<span class="def">candidate output length ÷ baseline output length</span></th><td>{{ payload.cost_latency.output_length_inflation|multiplier }}</td></tr>
+          <tr><th>USD delta<span class="def">candidate minus baseline cost per response</span></th><td>{{ payload.cost_latency.usd_delta|usd }}</td></tr>
         </table>
       </section>
 
       {# (g) scope & dedup disclosure #}
       <section class="section">
-        <h2>Scope &amp; exclusions</h2>
-        <p class="lead muted">What this certificate covers, and what was collapsed before sampling.</p>
+        <span class="eyebrow">Scope &amp; exclusions</span>
+        <p class="lead muted">What this certificate covers, and what was collapsed before sampling. It certifies only the sampled inputs, not future traffic.</p>
         <table>
           <tr><th>Workload</th><td>{{ payload.scope.workload }}</td></tr>
-          <tr><th>Traces collected</th><td>{{ payload.coverage.n_collected }}</td></tr>
-          <tr><th>After near-duplicate dedup</th><td>{{ payload.coverage.n_after_dedup }}</td></tr>
-          <tr><th>Dedup collapsed</th><td>{{ payload.coverage.dedup_collapsed }} (jaccard ≥ {{ payload.coverage.dedup_method.jaccard_threshold }}, shingle {{ payload.coverage.dedup_method.shingle_size }})</td></tr>
-          <tr><th>Sample size</th><td>{{ payload.coverage.n }}</td></tr>
+          <tr><th>Real inputs collected</th><td>{{ payload.coverage.n_collected }}</td></tr>
+          <tr><th>After near-duplicate merge<span class="def">near-duplicate inputs were merged so one pattern can't dominate</span></th><td>{{ payload.coverage.n_after_dedup }}</td></tr>
+          <tr><th>Duplicates collapsed</th><td>{{ payload.coverage.dedup_collapsed }} (jaccard ≥ {{ payload.coverage.dedup_method.jaccard_threshold }}, shingle {{ payload.coverage.dedup_method.shingle_size }})</td></tr>
+          <tr><th>Inputs tested</th><td>{{ payload.coverage.n }}</td></tr>
           <tr><th>Sampling method</th><td>{{ payload.coverage.sampling_method }}</td></tr>
           <tr><th>Excluded</th><td>{{ payload.coverage.exclusion_percent|pct_value }}</td></tr>
-          <tr><th>PII scrubbed</th><td>{{ payload.scope.scrubbed }}</td></tr>
+          <tr><th>Personal data scrubbed</th><td>{{ payload.scope.scrubbed }}</td></tr>
         </table>
       </section>
 
@@ -348,8 +393,12 @@
           <table>
             <tr><th>criteria</th><td class="mono">{% for c in payload.criteria %}{{ c.id }}={{ c.passed }}{{ "; " if not loop.last }}{% endfor %}</td></tr>
             <tr><th>candidate_regression_rate</th><td class="mono">{{ payload.candidate_regression_rate|default(0)|decimal(6) }}</td></tr>
-            <tr><th>noise_floor_raw.tau</th><td class="mono">{{ payload.noise_floor_raw.tau|default(0.9)|decimal(4) }}</td></tr>
+            <tr><th>noise_floor_raw.tau (similarity threshold)</th><td class="mono">{{ payload.noise_floor_raw.tau|default(0.9)|decimal(4) }}</td></tr>
             <tr><th>noise_floor_raw.threshold_source</th><td class="mono">{{ payload.noise_floor_raw.threshold_source|default("unknown") }}</td></tr>
+            <tr><th>judge_panel.krippendorff_alpha</th><td class="mono">{% if payload.judge_panel.krippendorff_alpha is not none %}{{ payload.judge_panel.krippendorff_alpha|decimal(4) }}{% else %}n/a ({{ payload.judge_panel.krippendorff_alpha_reason }}){% endif %}</td></tr>
+            <tr><th>judge_health.parse_failure_rate</th><td class="mono">{% if payload.judge_health.parse_failure_rate is not none %}{{ payload.judge_health.parse_failure_rate|decimal(6) }} ({{ payload.judge_health.parse_failures }}){% else %}n/a{% endif %}</td></tr>
+            <tr><th>judge_health.position_inconsistency_rate</th><td class="mono">{% if payload.judge_health.position_inconsistency_rate is not none %}{{ payload.judge_health.position_inconsistency_rate|decimal(6) }} ({{ payload.judge_health.position_inconsistencies }}){% else %}n/a{% endif %}</td></tr>
+            <tr><th>judge_panel.calibration_accuracy</th><td class="mono">{% if payload.judge_panel.calibration_accuracy is not none %}{{ payload.judge_panel.calibration_accuracy|decimal(6) }}{% else %}n/a ({{ payload.judge_panel.calibration_accuracy_reason }}){% endif %}</td></tr>
             <tr><th>mode</th><td class="mono">{{ payload.mode }}</td></tr>
             <tr><th>client_mode</th><td class="mono">{{ payload.client_mode }}</td></tr>
             <tr><th>engine_version</th><td class="mono">{{ payload.engine_version }}</td></tr>
@@ -365,7 +414,7 @@
 
       {# (h) signature footer #}
       <div class="footer">
-        <p>Verified: {{ cert.header.algo }} — verify offline with <code>acsi verify cert.json</code>.
+        <p><span class="wordmark">acsi</span> · Verified: {{ cert.header.algo }} — verify offline with <code>acsi verify cert.json</code>.
         Engine {{ payload.engine_version }} · run {{ payload.run_id }} · issued {{ cert.header.issued_at }}.</p>
         <details class="expander">
           <summary>Signature &amp; public key</summary>

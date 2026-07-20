@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +19,7 @@ from acsi.cert.build import (
 TEMPLATE_DIR = Path(__file__).resolve().parents[2] / "templates"
 REPORT_TEMPLATE = "report.html.j2"
 ALPINE_PATH = TEMPLATE_DIR / "alpine.min.js"
+FONTS_DIR = TEMPLATE_DIR / "fonts"
 
 _EXEMPLAR_PROMPT_CHARS = 600
 _EXEMPLAR_RESPONSE_CHARS = 1400
@@ -123,12 +126,28 @@ def render_report_html(
         cert=cert,
         certificate_json=certificate_json,
         cluster_evidence=cluster_evidence,
+        font_display=_font_data_uri(template_dir, "rajdhani-500.woff2"),
+        font_heading=_font_data_uri(template_dir, "plus-jakarta.woff2"),
         payload=payload,
         review_mode=review_mode,
         view=view,
     )
     assert_no_banned_language(rendered)
     return rendered
+
+
+@lru_cache(maxsize=8)
+def _font_data_uri(template_dir: Path, name: str) -> str:
+    """Base64 woff2 data URI for a bundled brand font, or '' if unavailable.
+
+    Fonts are the acsi.dev subset woff2 files, embedded inline so the report
+    makes zero external requests. A missing file degrades to the system stack.
+    """
+    path = template_dir / "fonts" / name
+    if not path.exists():
+        return ""
+    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+    return f"data:font/woff2;base64,{encoded}"
 
 
 def _build_view(payload: dict[str, Any]) -> dict[str, Any]:
@@ -143,6 +162,7 @@ def _build_view(payload: dict[str, Any]) -> dict[str, Any]:
     n = int(coverage.get("n") or 0)
     return {
         "is_pass": str(payload.get("verdict")) == "PASS",
+        "coverage_plain": _coverage_plain(payload, n),
         "regressed_headline": _regressed_headline(regressed, n),
         "unresolved_headline": _unresolved_headline(regressed, n),
         "criteria": [_criterion_card(criterion) for criterion in payload.get("criteria") or []],
@@ -151,6 +171,20 @@ def _build_view(payload: dict[str, Any]) -> dict[str, Any]:
         "judge_narrative": _judge_narrative(payload),
         "unresolved_reconciliation": _unresolved_reconciliation(payload),
     }
+
+
+def _coverage_plain(payload: dict[str, Any], n: int) -> str | None:
+    """Muted plain-English companion to the pinned coverage sentence."""
+    disagreement = payload.get("candidate_disagreement") or {}
+    lower = disagreement.get("lower")
+    upper = disagreement.get("upper")
+    if not payload.get("noise_floor") or lower is None or upper is None:
+        return None
+    return (
+        f"In plain terms: we tested {n} real inputs; between "
+        f"{_format_percent(lower)} and {_format_percent(upper)} of the new model's "
+        "answers differed beyond normal randomness."
+    )
 
 
 def _severity_label(severity: Any) -> str:
@@ -212,16 +246,20 @@ def _criterion_input(criterion: dict[str, Any]) -> str:
     if criterion_id == "candidate_regression_rate":
         if criterion.get("mode") == "degraded":
             return "not evaluated — baseline noise floor unavailable"
-        base = (
-            f"candidate up to {_format_ci_percent(criterion.get('actual_ci_upper', 0.0))} "
-            f"vs. allowed {_format_ci_percent(criterion.get('threshold', 0.0))} "
-            f"(baseline noise {_format_ci_percent(criterion.get('baseline_ci_upper', 0.0))} "
-            f"+ {_format_percent(criterion.get('epsilon', 0.0))} tolerance)"
+        # SPEC-NOTE: same numbers as the raw stat form, in sentences a non-expert
+        # can follow (v2 comprehension pass).
+        sentence = (
+            f"The new model differed on up to "
+            f"{_format_ci_percent(criterion.get('actual_ci_upper', 0.0))} of inputs. "
+            f"The old model's own randomness allows "
+            f"{_format_ci_percent(criterion.get('threshold', 0.0))}."
         )
         unresolved = int(criterion.get("unresolved_pairs", 0) or 0)
         if unresolved:
-            base += f"; includes {unresolved} unresolved pair(s), counted conservatively"
-        return base
+            sentence += (
+                f" {unresolved} undecided pairs are counted against the new model to be safe."
+            )
+        return sentence
     if criterion_id == "critical_cluster_share":
         actual = criterion.get("actual") or []
         if not isinstance(actual, list) or not actual:
