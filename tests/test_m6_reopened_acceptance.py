@@ -437,15 +437,15 @@ def test_html_report_is_self_contained_static_and_complete(tmp_path: Path) -> No
     assert "http://" not in html
     assert "https://" not in html
     assert "window.Alpine" in html
+    # Section headings updated for the redesigned report (rendering-only change).
     for section in (
-        "Criteria",
-        "Noise Floor And Candidate",
-        "Assertions",
-        "Judge Panel",
-        "Clusters And Patches",
-        "Cost, Latency, And Tokens",
-        "Scope And Exclusions",
-        "Signature",
+        "Pass criteria",
+        "Failure clusters",
+        "Noise floor",
+        "Judge panel",
+        "Cost",
+        "Scope",
+        "Verified:",
     ):
         assert section in html
     assert cert.payload["coverage_sentence"] in html

@@ -57,9 +57,10 @@ def test_review_server_binds_loopback_and_serves_report(tmp_path: Path) -> None:
         thread.join(timeout=5)
         server.server_close()
 
-    assert "Review Queue" in body
-    assert "Unresolved Queue" in body
-    assert "Promote Assertion" in body
+    # Sentence-case headings in the redesigned review layout (rendering-only).
+    assert "Review queue" in body
+    assert "Unresolved queue" in body
+    assert "Promote assertion" in body
 
 
 def test_review_server_handles_keyboard_interrupt_cleanly(monkeypatch) -> None:

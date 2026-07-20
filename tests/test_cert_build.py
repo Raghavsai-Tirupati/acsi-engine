@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -183,7 +184,8 @@ def test_cluster_details_surface_assertion_failure_reasons(tmp_path: Path) -> No
     report_text = (run_dir / "report.html").read_text(encoding="utf-8")
 
     assert "summary: 612 is longer than 400" in cluster["reasons"]
-    assert "Assertion failure reasons" in report_text
+    # Redesigned report labels the reason "Why it failed"; the string still shows.
+    assert "Why it failed" in report_text
     assert "summary: 612 is longer than 400" in report_text
 
 
@@ -480,6 +482,120 @@ def test_live_run_certificate_report_omits_fake_banner(tmp_path: Path) -> None:
     assert result.payload["client_mode"] == "live"
     assert FAKE_CLIENT_BANNER not in report_text
     assert "FAKE CLIENTS" not in report_text
+
+
+def _visible_text(html: str) -> str:
+    """Rendered text a reader sees: excludes the machine JSON script and the
+    auditor raw-values expander, the only places raw keys may appear."""
+    without_script = re.sub(r"<script[^>]*>.*?</script>", "", html, flags=re.DOTALL)
+    return re.sub(
+        r'<details class="expander rawview">.*?</details>',
+        "",
+        without_script,
+        flags=re.DOTALL,
+    )
+
+
+def test_no_raw_payload_keys_in_visible_text(tmp_path: Path) -> None:
+    manifest_path, manifest, traces, run_dir = _write_inputs(tmp_path)
+    pair = str(traces[0].trace_id)
+    _write_json(
+        run_dir / "clusters.json",
+        {
+            "clusters": [
+                {
+                    "cluster_id": "cluster-0",
+                    "description": "d",
+                    "member_count": 1,
+                    "name": "Summary too long",
+                    "pair_ids": [pair],
+                    "severity": "worse_critical",
+                    "share_of_sampled": 1 / 3,
+                }
+            ],
+            "stats": {},
+        },
+    )
+
+    result = build_certificate(
+        manifest=manifest, traces=traces, run_dir=run_dir, manifest_path=manifest_path
+    )
+    render_report(result.cert, output_path=run_dir / "report.html", evidence_dir=run_dir)
+    html = (run_dir / "report.html").read_text(encoding="utf-8")
+    visible = _visible_text(html)
+
+    for jargon in ("threshold_source", "worse_critical", "epsilon", "tau"):
+        assert jargon not in visible, f"raw key {jargon!r} leaked into visible text"
+    # ...but auditors can still find the exact keys in the raw view / JSON.
+    assert "threshold_source" in html
+    assert "worse_critical" in html
+
+
+def test_cluster_details_show_prompt_response_and_reason(tmp_path: Path) -> None:
+    manifest_path, manifest, traces, run_dir = _write_inputs(tmp_path)
+    pair = str(traces[0].trace_id)
+    _write_json(
+        run_dir / "clusters.json",
+        {
+            "clusters": [
+                {
+                    "cluster_id": "cluster-0",
+                    "description": "d",
+                    "member_count": 1,
+                    "name": "Summary too long",
+                    "pair_ids": [pair],
+                    "severity": "worse_critical",
+                    "share_of_sampled": 1 / 3,
+                }
+            ],
+            "stats": {},
+        },
+    )
+    _write_jsonl(
+        run_dir / "assertion_results.jsonl",
+        [
+            {
+                "assertion_id": "summary-schema",
+                "baseline_passed": True,
+                "candidate_passed": False,
+                "pair_id": pair,
+                "reason": "REASON_TOKEN_summary_too_long",
+                "severity": "critical",
+                "trace_id": pair,
+            }
+        ],
+    )
+    _write_jsonl(
+        run_dir / "sampled_traces.jsonl",
+        [trace.model_dump(mode="json") for trace in traces],
+    )
+    # Keep full candidate coverage (evidence floor) but make pair-0 distinctive.
+    _write_jsonl(
+        run_dir / "candidate" / "responses.jsonl",
+        [
+            {
+                "trace_id": str(trace.trace_id),
+                "sample_index": 0,
+                "response": {
+                    "text": "CANDIDATE_TOKEN_output" if str(trace.trace_id) == pair else "{}"
+                },
+            }
+            for trace in traces
+        ],
+    )
+
+    result = build_certificate(
+        manifest=manifest, traces=traces, run_dir=run_dir, manifest_path=manifest_path
+    )
+    render_report(result.cert, output_path=run_dir / "report.html", evidence_dir=run_dir)
+    html = (run_dir / "report.html").read_text(encoding="utf-8")
+
+    prompt_head = traces[0].request.messages[0].content[:24]
+    assert "Input prompt" in html
+    assert prompt_head in html
+    assert "Candidate response" in html
+    assert "CANDIDATE_TOKEN_output" in html
+    assert "REASON_TOKEN_summary_too_long" in html
 
 
 def _write_inputs(tmp_path: Path) -> tuple[Path, WorkloadManifest, list, Path]:

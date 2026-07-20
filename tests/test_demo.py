@@ -76,10 +76,8 @@ def test_demo_runs_pass_and_block_and_verifies_both_certs(tmp_path: Path) -> Non
         "unresolved_only": 0,
         "unresolved_rate": 0.0,
     }
-    assert (
-        "24/300 sampled pairs regressed (8.0%) — 0 by assertion, "
-        "0 by judge verdict, 24 by both."
-    ) in block_text
+    # Redesigned hero headline (rendering-only): plain-English narrative.
+    assert "24 of 300 sampled pairs (8.0%) regressed — 24 by both." in block_text
     assert (
         block_payload["regressed_pairs"]["by_source"]["assertion"]
         + block_payload["regressed_pairs"]["by_source"]["both"]
@@ -90,7 +88,8 @@ def test_demo_runs_pass_and_block_and_verifies_both_certs(tmp_path: Path) -> Non
         + block_payload["regressed_pairs"]["by_source"]["both"]
         > 0
     )
-    assert "judge-adjudicated regression vs noise floor" in block_html
+    # Criterion label is now user-facing.
+    assert "Regression vs. baseline noise" in block_html
 
     pass_noise = pass_payload["noise_floor"]
     pass_criterion_b = pass_payload["criteria"][1]
@@ -98,7 +97,10 @@ def test_demo_runs_pass_and_block_and_verifies_both_certs(tmp_path: Path) -> Non
     assert pass_payload["noise_floor_raw"]["analytic_note"]["q"] == 0.05
     assert pass_noise["rate"] > 0
     assert pass_criterion_b["actual_ci_upper"] <= pass_criterion_b["threshold"]
-    assert "Threshold τ" in pass_html
+    # "Similarity threshold" is the user-facing label; the exact key
+    # "threshold_source" still appears in the auditor raw view, and its value
+    # "calibrated" shows in the plain narrative.
+    assert "Similarity threshold" in pass_html
     assert "threshold_source" in pass_html
     assert "calibrated" in pass_html
 
