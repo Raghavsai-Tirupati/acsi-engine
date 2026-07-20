@@ -25,7 +25,10 @@ result replicated at ~50% across three independent runs.
 Scope this claim exactly as stated: **on this benchmark workload.** ACSI certifies
 the corpus it was run against and nothing beyond it.
 
-Signed certificate: **certificate publishing shortly.**
+Signed certificate: **<https://www.acsi.dev/cert/opus-4-1-to-sonnet-5>**. Anyone can
+download the raw certificate at
+<https://www.acsi.dev/cert/opus-4-1-to-sonnet-5/cert.json> and check it offline with
+`acsi verify cert.json` — no keys, no network, no trust in us required.
 
 ---
 

@@ -366,7 +366,7 @@
           <tr><th>Baseline mean output tokens</th><td>{{ payload.cost_latency.baseline_mean_output_tokens|decimal(1) }}</td></tr>
           <tr><th>Candidate mean output tokens</th><td>{{ payload.cost_latency.candidate_mean_output_tokens|decimal(1) }}</td></tr>
           <tr><th>Output length inflation<span class="def">candidate output length ÷ baseline output length</span></th><td>{{ payload.cost_latency.output_length_inflation|multiplier }}</td></tr>
-          <tr><th>USD delta<span class="def">candidate minus baseline cost per response</span></th><td>{{ payload.cost_latency.usd_delta|usd }}</td></tr>
+          <tr><th>USD delta<span class="def">candidate minus baseline, total across all sampled responses</span></th><td>{{ payload.cost_latency.usd_delta|usd }}</td></tr>
         </table>
       </section>
 
