@@ -211,6 +211,7 @@ class RunManifest(StrictModel):
     endpoints: dict[str, str]
     served_models: list[str]
     degraded: bool = False
+    client_mode: Literal["fake", "live"] = "fake"
     param_transformations: list[ParamTransformation] = Field(default_factory=list)
     wall_clock_seconds: float = Field(ge=0)
     cost_ledger: list[CostLedgerEntry] = Field(default_factory=list)

@@ -30,6 +30,124 @@ def _write_manifest(path: Path) -> Path:
     return path
 
 
+FAKE_BANNER = "FAKE CLIENTS — NOT A CERTIFICATION"
+
+
+def _fake_run(tmp_path: Path, run_id: str) -> tuple[Path, Path]:
+    manifest = _write_manifest(tmp_path / "acsi.yaml")
+    run_dir = tmp_path / ".acsi"
+    result = CliRunner().invoke(
+        app,
+        [
+            "run",
+            "--manifest",
+            str(manifest),
+            "--traces",
+            str(FIXTURE_PATH),
+            "--run-dir",
+            str(run_dir),
+            "--run-id",
+            run_id,
+            "--fake-noise",
+            "0.05",
+            "--inject-broken-json-rate",
+            "0.08",
+            "--yes",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    return manifest, run_dir
+
+
+def _rebuild(manifest: Path, run_dir: Path, run_id: str, out: Path):
+    return CliRunner().invoke(
+        app,
+        [
+            "rebuild-cert",
+            "--run",
+            run_id,
+            "--manifest",
+            str(manifest),
+            "--run-dir",
+            str(run_dir),
+            "--out",
+            str(out),
+            "--json",
+        ],
+    )
+
+
+def _patch_json(path: Path, mutate) -> None:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    mutate(payload)
+    path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def test_client_mode_persisted_in_run_json(tmp_path: Path) -> None:
+    _manifest, run_dir = _fake_run(tmp_path, "00000000-0000-0000-0000-0000000006fa")
+    run_json = json.loads(
+        (run_dir / "runs" / "00000000-0000-0000-0000-0000000006fa" / "run.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert run_json["client_mode"] == "fake"
+
+
+def test_rebuild_fake_run_keeps_banner(tmp_path: Path) -> None:
+    run_id = "00000000-0000-0000-0000-0000000006fb"
+    manifest, run_dir = _fake_run(tmp_path, run_id)
+    out = tmp_path / "rebuilt"
+    result = _rebuild(manifest, run_dir, run_id, out)
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["client_mode"] == "fake"
+    assert json.loads((out / "cert.json").read_text())["payload"]["client_mode"] == "fake"
+    assert FAKE_BANNER in (out / "report.html").read_text(encoding="utf-8")
+
+
+def test_rebuild_live_run_carries_mode_and_drops_banner(tmp_path: Path) -> None:
+    run_id = "00000000-0000-0000-0000-0000000006fc"
+    manifest, run_dir = _fake_run(tmp_path, run_id)
+    # Simulate a live run's persisted state.
+    _patch_json(
+        run_dir / "runs" / run_id / "run.json",
+        lambda payload: payload.update(client_mode="live"),
+    )
+    out = tmp_path / "rebuilt"
+    result = _rebuild(manifest, run_dir, run_id, out)
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["client_mode"] == "live"
+    assert json.loads((out / "cert.json").read_text())["payload"]["client_mode"] == "live"
+    assert FAKE_BANNER not in (out / "report.html").read_text(encoding="utf-8")
+
+
+def test_rebuild_reads_mode_from_cert_when_run_json_lacks_it(tmp_path: Path) -> None:
+    # The 7f0978f5 case: run.json has no client_mode, original cert payload does.
+    run_id = "00000000-0000-0000-0000-0000000006f9"
+    manifest, run_dir = _fake_run(tmp_path, run_id)
+    src = run_dir / "runs" / run_id
+    _patch_json(src / "run.json", lambda payload: payload.pop("client_mode", None))
+    _patch_json(src / "cert.json", lambda cert: cert["payload"].update(client_mode="live"))
+    out = tmp_path / "rebuilt"
+    result = _rebuild(manifest, run_dir, run_id, out)
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["client_mode"] == "live"
+    assert FAKE_BANNER not in (out / "report.html").read_text(encoding="utf-8")
+
+
+def test_rebuild_refuses_when_mode_unrecoverable(tmp_path: Path) -> None:
+    run_id = "00000000-0000-0000-0000-0000000006f8"
+    manifest, run_dir = _fake_run(tmp_path, run_id)
+    src = run_dir / "runs" / run_id
+    _patch_json(src / "run.json", lambda payload: payload.pop("client_mode", None))
+    _patch_json(src / "cert.json", lambda cert: cert["payload"].pop("client_mode", None))
+    out = tmp_path / "rebuilt"
+    result = _rebuild(manifest, run_dir, run_id, out)
+    assert result.exit_code == 1
+    assert "client_mode" in result.output
+    assert not out.exists()
+
+
 def test_rebuild_cert_reissues_without_spend_and_preserves_original(tmp_path: Path) -> None:
     manifest = _write_manifest(tmp_path / "acsi.yaml")
     run_dir = tmp_path / ".acsi"

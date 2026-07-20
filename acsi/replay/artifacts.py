@@ -37,6 +37,7 @@ def build_run_manifest(
     result: ReplayResult,
     wall_clock_seconds: float,
     degraded: bool = False,
+    client_mode: str = "fake",
     phase: str = "replay",
     run_started_at: str | None = None,
     stages: dict[str, object] | None = None,
@@ -54,6 +55,7 @@ def build_run_manifest(
         endpoints={provider: endpoint},
         served_models=store.served_models(run_id, phase=phase),
         degraded=degraded,
+        client_mode=client_mode if client_mode in {"fake", "live"} else "fake",
         param_transformations=_param_transformations(result.param_transforms),
         wall_clock_seconds=wall_clock_seconds,
         cost_ledger=[

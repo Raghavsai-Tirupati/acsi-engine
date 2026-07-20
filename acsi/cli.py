@@ -343,6 +343,30 @@ def _load_run_identity(path: Path) -> dict[str, object]:
         return {}
 
 
+def _resolve_client_mode(source_dir: Path) -> str | None:
+    """Recover a completed run's client mode without ever inferring or defaulting.
+
+    Prefers the persisted run.json field; falls back to the original certificate's
+    payload for runs recorded before the field existed. Returns None only when
+    neither source carries it, so a rebuild never silently mislabels a live run as
+    fake (or the reverse).
+    """
+    run_state = _load_run_identity(source_dir / "run.json")
+    mode = run_state.get("client_mode")
+    if mode in {"fake", "live"}:
+        return str(mode)
+    cert_path = source_dir / "cert.json"
+    if cert_path.exists():
+        try:
+            payload = json.loads(cert_path.read_text(encoding="utf-8")).get("payload") or {}
+        except (OSError, json.JSONDecodeError):
+            payload = {}
+        mode = payload.get("client_mode")
+        if mode in {"fake", "live"}:
+            return str(mode)
+    return None
+
+
 def _copy_rebuild_inputs(src: Path, dst: Path) -> None:
     """Copy a run's stored evidence into a fresh output dir (never the reverse).
 
@@ -1136,6 +1160,7 @@ def run(
                 result=replay_result,
                 wall_clock_seconds=clock.elapsed_seconds(),
                 degraded=degraded,
+                client_mode="live" if live else "fake",
                 phase="candidate",
                 run_started_at=run_started_at,
                 stages=stages,
@@ -1757,6 +1782,7 @@ def replay(
             store=store,
             result=result,
             wall_clock_seconds=clock.elapsed_seconds(),
+            client_mode="live" if live else "fake",
         )
         run_hash = write_run_manifest(run_dir / "run.json", run_manifest)
     except ReplayAbortError as exc:
@@ -2101,6 +2127,15 @@ def rebuild_cert(
                 json_output,
             )
 
+        client_mode = _resolve_client_mode(source_dir)
+        if client_mode is None:
+            _fail(
+                "Cannot determine client_mode for this run: neither run.json nor "
+                "the original cert.json records it. Refusing to rebuild rather than "
+                "guess whether the run was live or fake.",
+                json_output,
+            )
+
         dest_dir = out or (run_dir / "runs" / f"{run_id}-rebuild")
         if dest_dir.resolve() == source_dir.resolve():
             _fail("Output directory must differ from the original run directory.", json_output)
@@ -2140,6 +2175,7 @@ def rebuild_cert(
             traces=traces,
             run_dir=dest_dir,
             manifest_path=manifest,
+            client_mode=client_mode,
         )
         report_hash = render_report(cert_result.cert, output_path=dest_dir / "report.html")
     except (
@@ -2155,6 +2191,7 @@ def rebuild_cert(
         "status": "ok",
         "rebuilt_from": str(source_dir),
         "run_dir": str(dest_dir),
+        "client_mode": client_mode,
         "verdict": cert_result.payload["verdict"],
         "cert_path": str(dest_dir / "cert.json"),
         "cert_sha256": cert_result.cert_sha256,
