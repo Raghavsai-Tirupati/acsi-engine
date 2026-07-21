@@ -556,8 +556,21 @@ def _bucket_from_members(
     # an assertion failure) is a panel OUTCOME, not an assertion failure: it is
     # named and severity-labeled by that outcome (e.g. "unresolved") and never
     # described as an assertion failure — unresolved is not a harm severity.
+    #
+    # SPEC-NOTE: a cluster's name and severity must reflect its MAJORITY
+    # composition. A minority of assertion-flagged members must not title the
+    # cluster or escalate its severity (run 6718f3b3: cluster-0 was 124 unresolved
+    # judge pairs + 1 no-markdown-fences pair, yet the lone assertion member named
+    # the whole cluster "forbidden substring present '```'" and pushed it to
+    # worse_critical). Assertion naming wins only when assertion-flagged members are
+    # the strict majority — or when outcome naming is unavailable (name_by_outcome
+    # off, which has no panel-outcome alternative). Otherwise the cluster is named
+    # and severitied by its dominant panel outcome, and the assertion minority is
+    # noted in the description.
+    assertion_members = sum(1 for member in members if member.assertion_failures)
+    assertion_is_majority = assertion_members * 2 > len(members)
     assertion_name = _dominant_reason_label(members)
-    if assertion_name is not None:
+    if assertion_name is not None and (assertion_is_majority or not name_by_outcome):
         reason_name = assertion_name
         severity = SEVERITY_BY_RANK[max(member.severity_rank for member in members)]
         resolved_description = (
@@ -572,11 +585,17 @@ def _bucket_from_members(
         severity = dominant_outcome if reason_name else SEVERITY_BY_RANK[
             max(member.severity_rank for member in members)
         ]
-        resolved_description = (
-            f"{len(members)} pair(s) with judge panel outcome: {reason_name}"
-            if reason_name
-            else description
-        )
+        if reason_name:
+            resolved_description = (
+                f"{len(members)} pair(s) with judge panel outcome: {reason_name}"
+            )
+            if assertion_members:
+                resolved_description += (
+                    f"; includes {assertion_members} assertion-flagged pair"
+                    f"{'' if assertion_members == 1 else 's'}"
+                )
+        else:
+            resolved_description = description
     else:
         reason_name = None
         severity = SEVERITY_BY_RANK[max(member.severity_rank for member in members)]

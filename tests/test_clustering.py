@@ -111,6 +111,80 @@ def test_unresolved_cluster_is_not_labeled_an_assertion_failure() -> None:
         assert "judge panel outcome" in bucket.description
 
 
+def test_mixed_cluster_minority_assertion_names_as_dominant_outcome() -> None:
+    # A cluster of mostly-unresolved pairs plus a single assertion-flagged pair
+    # must be named and severitied by the majority outcome (unresolved), never by
+    # the lone assertion member's reason (regression seen in run 6718f3b3, where
+    # 1 no-markdown-fences pair titled a 125-member majority-unresolved cluster).
+    records = [
+        *[_record(f"u{i}", outcome="unresolved", candidate="body") for i in range(6)],
+        _record(
+            "fence",
+            outcome="equivalent",
+            failures=[
+                AssertionFailure(
+                    "no-markdown-fences",
+                    Severity.MAJOR,
+                    reason="forbidden substring present '```'",
+                )
+            ],
+        ),
+    ]
+    regressions = build_regression_set(records)
+    # 7 regressions < 2 * min_cluster_size collapses to one all_regressions bucket
+    # so the mix lands in a single cluster deterministically.
+    buckets = cluster_regressions(
+        regressions,
+        n_sampled_pairs=100,
+        min_cluster_size=4,
+        name_by_outcome=True,
+    )
+
+    assert len(buckets) == 1
+    bucket = buckets[0]
+    assert bucket.name == "Unresolved — panel could not decide"
+    assert bucket.severity == "unresolved"
+    assert "share this assertion failure" not in bucket.description
+    assert "judge panel outcome" in bucket.description
+    assert "includes 1 assertion-flagged pair" in bucket.description
+
+
+def test_majority_assertion_cluster_names_by_dominant_reason() -> None:
+    # When assertion-flagged members are the majority, the cluster is still named
+    # by its dominant assertion reason (the minority judge members do not divert
+    # naming).
+    records = [
+        *[
+            _record(
+                f"fence{i}",
+                outcome="equivalent",
+                candidate=f"body {i}",
+                failures=[
+                    AssertionFailure(
+                        "no-markdown-fences",
+                        Severity.MAJOR,
+                        reason="forbidden substring present '```'",
+                    )
+                ],
+            )
+            for i in range(5)
+        ],
+        *[_record(f"u{i}", outcome="unresolved", candidate="body") for i in range(2)],
+    ]
+    regressions = build_regression_set(records)
+    buckets = cluster_regressions(
+        regressions,
+        n_sampled_pairs=100,
+        min_cluster_size=4,
+        name_by_outcome=True,
+    )
+
+    assert len(buckets) == 1
+    bucket = buckets[0]
+    assert bucket.name == "forbidden substring present '```'"
+    assert "share this assertion failure" in bucket.description
+
+
 def test_judge_worse_cluster_keeps_harm_severity() -> None:
     regressions = build_regression_set(
         [_record(f"w{i}", outcome="worse_critical", candidate="body") for i in range(6)]
