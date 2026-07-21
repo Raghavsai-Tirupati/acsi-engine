@@ -14,11 +14,18 @@ The only differences from the unpatched variant are the workload name
 rubric (`fabrication.txt`), models, sampling, assertions, and thresholds are all
 identical, so the two certificates are directly comparable.
 
-## The patch
+## The patch (v2)
 
 The following paragraph is appended verbatim to the end of `system_prompt.txt`:
 
-> Hard limits: the summary field must be at most 400 characters. The affected_area field must be at most 60 characters. Include at most 5 action_items. Output the JSON object only - no markdown code fences, no text before or after it.
+> Hard limits: keep the summary under 350 characters; the absolute maximum is 400. Keep affected_area under 50 characters; the absolute maximum is 60. A short module or component name is enough for affected_area. Include at most 5 action_items. Output the raw JSON object only - no markdown code fences, no text before or after it.
+
+**Why v2.** The v1 patch — which stated only the absolute caps (400 / 60
+characters) — already cut candidate regressions from **149 to 18** on this
+workload. This iteration adds *headroom targets*: it asks the model to aim well
+under the caps (350 / 50) rather than right at them, and clarifies that a short
+module or component name suffices for `affected_area`, so borderline outputs stop
+grazing the hard limits.
 
 ## Reuse the existing corpus — do not re-pull
 
