@@ -1,0 +1,50 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "action_items": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 5,
+      "type": "array"
+    },
+    "affected_area": {
+      "maxLength": 60,
+      "type": "string"
+    },
+    "category": {
+      "enum": [
+        "bug",
+        "feature_request",
+        "question",
+        "docs",
+        "performance",
+        "other"
+      ]
+    },
+    "needs_more_info": {
+      "type": "boolean"
+    },
+    "severity": {
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ]
+    },
+    "summary": {
+      "maxLength": 400,
+      "type": "string"
+    }
+  },
+  "required": [
+    "summary",
+    "category",
+    "severity",
+    "affected_area",
+    "action_items",
+    "needs_more_info"
+  ],
+  "type": "object"
+}

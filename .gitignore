@@ -12,3 +12,4 @@ build/
 .DS_Store
 benchmarks/oss-issues/corpus.jsonl
 benchmarks/oss-issues/traces.jsonl
+benchmarks/oss-issues-patched/traces.jsonl

@@ -1,0 +1,100 @@
+# SPEC-NOTE: The baseline model intentionally uses the provider alias
+# claude-opus-4-1. Per M2, the engine records served_model on replay outputs;
+# scripts/generate_benchmark_traces.py also prints the resolved served_model
+# observed while creating benchmark traces.
+workload: oss-issue-summary-patched
+baseline:
+  provider: anthropic
+  model: claude-opus-4-1
+candidate:
+  provider: anthropic
+  model: claude-sonnet-5
+sampling:
+  n: 300
+  stratify_by:
+    - input_length_bucket
+  seed: 42
+  k_baseline: 2
+assertions:
+  - id: summary-schema
+    type: json_schema
+    severity: critical
+    schema_ref: summary.schema.json
+    schema:
+      additionalProperties: false
+      properties:
+        action_items:
+          items:
+            type: string
+          maxItems: 5
+          type: array
+        affected_area:
+          maxLength: 60
+          type: string
+        category:
+          enum:
+            - bug
+            - feature_request
+            - question
+            - docs
+            - performance
+            - other
+        needs_more_info:
+          type: boolean
+        severity:
+          enum:
+            - low
+            - medium
+            - high
+            - critical
+        summary:
+          maxLength: 400
+          type: string
+      required:
+        - summary
+        - category
+        - severity
+        - affected_area
+        - action_items
+        - needs_more_info
+      type: object
+  - id: no-markdown-fences
+    type: not_contains
+    severity: major
+    value: "```"
+  - id: response-length
+    type: length_range
+    severity: minor
+    min_chars: 20
+    max_chars: 2000
+  - id: latency-p95
+    type: latency_p95_ms
+    severity: major
+    max: 30000
+  - id: no-fabrication
+    type: judge_classifier
+    severity: major
+    prompt_ref: fabrication.txt
+judging:
+  min_judges: 2
+  families_allowed:
+    - openai
+    - google
+    - local
+  # SPEC-NOTE: model IDs verified against July 2026 pricing registries; the exact
+  # strings are confirmed at runtime by `acsi preflight`, which is the authority.
+  judges:
+    - provider: openai
+      model: gpt-5.4-mini
+    - provider: google
+      model: gemini-3.5-flash
+thresholds:
+  epsilon_pp: 2.0
+  max_critical: 0
+  confidence: 0.95
+privacy:
+  scrub: true
+  egress: hosted_api
+budget:
+  max_usd: 60
+  use_batch_api: false
