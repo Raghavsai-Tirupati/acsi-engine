@@ -740,6 +740,36 @@ def _stage_finished(stages: dict[str, dict[str, object]], stage: str) -> bool:
     return stages.get(stage, {}).get("status") in {"completed", "skipped"}
 
 
+def _replay_stage_covered(
+    store: ReplayStore,
+    run_id: str,
+    phase: str,
+    sampled_records: list[TraceRecord],
+    k_samples: int,
+) -> bool:
+    """True only if every sampled (trace, sample_index) has a 'done' response.
+
+    SPEC-NOTE: for resume, coverage — not stage status — decides whether a replay
+    stage may be skipped. A stage marked "completed" whose store holds fewer
+    successful responses than sampled*k is NOT complete: a call that failed
+    permanently after retries leaves the stage "completed" at <100% coverage
+    (run 49604645: candidate 279/280). Recomputing coverage here lets the caller
+    re-open such a stage and redispatch ONLY the missing items; the runner reuses
+    banked 'done' responses via its checkpoint cache, so covered items are never
+    re-dispatched.
+    """
+    responded = {
+        (call.trace_id, call.sample_index)
+        for call in store.done_calls(run_id, phase=phase)
+    }
+    expected = {
+        (str(record.trace_id), index)
+        for record in sampled_records
+        for index in range(k_samples)
+    }
+    return expected <= responded
+
+
 def _utc_now() -> str:
     from datetime import UTC, datetime
 
@@ -1071,7 +1101,20 @@ def run(
             )
 
         store = ReplayStore(active_run_dir / "replay.sqlite")
-        if not _stage_finished(stages, "baseline"):
+        # A "completed" replay stage is only truly complete for resume if its store
+        # covers every sampled (trace, sample_index); a permanently-failed call
+        # leaves it completed-but-short. Re-open such a stage to redispatch ONLY the
+        # missing items (the runner reuses banked responses via its checkpoint
+        # cache, so covered items are never re-dispatched). The evidence floor is
+        # unchanged and fires only if a gap persists after this redispatch.
+        baseline_covered = _stage_finished(stages, "baseline") and _replay_stage_covered(
+            store,
+            active_run_id,
+            "baseline",
+            sampled_records,
+            manifest_model.sampling.k_baseline,
+        )
+        if not baseline_covered:
             baseline_result = asyncio.run(
                 run_baseline_stage(
                     sampled_records,
@@ -1112,7 +1155,14 @@ def run(
                 dispatched=baseline_result.replay_result.dispatched,
             )
 
-        if not _stage_finished(stages, "replay"):
+        candidate_covered = _stage_finished(stages, "replay") and _replay_stage_covered(
+            store,
+            active_run_id,
+            "candidate",
+            sampled_records,
+            1,
+        )
+        if not candidate_covered:
             candidate_client = (
                 LiveClient()
                 if live
