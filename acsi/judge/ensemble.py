@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 
-from acsi.judge.rubric import CandidateOutcome
+from acsi.judge.rubric import _NOT_WORSE, _WORSE, CandidateOutcome
 
 ENSEMBLE_OUTCOMES: tuple[CandidateOutcome, ...] = (
     "equivalent",
@@ -41,14 +41,36 @@ def majority_outcome(
     # e.g. one of two judges exhausts retries. Pairs seen by a single judge (or
     # min_valid=1, the default) keep the pre-existing single-vote behavior, so no
     # healthy run changes.
+    #
+    # SPEC-NOTE: cross-judge reconciliation is by DIRECTION OF HARM, mirroring the
+    # order-swap rule in reconcile_position_outcomes (same _NOT_WORSE/_WORSE
+    # classes, same conservative representative). Judges that split only on *how
+    # good* a non-regressed candidate is (candidate_better vs equivalent) — or only
+    # on *how bad* a regression is (worse_minor vs worse_critical) — still agree on
+    # harm class and resolve to the milder label unless every valid vote agrees on
+    # the stronger one, instead of fragmenting to "unresolved" on a plurality tie.
+    # Run 49604645 had ZERO worse verdicts yet 143 unresolved purely from
+    # better-vs-equivalent splits. A genuine cross-boundary conflict (any worse vs
+    # any non-worse) stays "unresolved"; so does a pair below the valid-vote floor.
+    # Human overrides, applied downstream in the certificate, remain authoritative
+    # over this outcome.
     floor = max(1, min(min_valid, len(votes)))
     eligible = [vote for vote in votes if vote != "unresolved"]
     if len(eligible) < floor:
         return "unresolved"
-    counts = Counter(eligible)
-    top_count = max(counts.values())
-    winners = [outcome for outcome, count in counts.items() if count == top_count]
-    return winners[0] if len(winners) == 1 else "unresolved"
+    if all(vote in _NOT_WORSE for vote in eligible):
+        return (
+            "candidate_better"
+            if all(vote == "candidate_better" for vote in eligible)
+            else "equivalent"
+        )
+    if all(vote in _WORSE for vote in eligible):
+        return (
+            "worse_critical"
+            if all(vote == "worse_critical" for vote in eligible)
+            else "worse_minor"
+        )
+    return "unresolved"
 
 
 def aggregate_pair_outcomes(

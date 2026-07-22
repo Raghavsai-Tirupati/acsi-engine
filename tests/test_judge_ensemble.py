@@ -14,12 +14,46 @@ from acsi.judge.ensemble import (
     majority_outcome,
     raw_agreement_percent,
 )
+from acsi.overrides import aggregate_judgment_rows, apply_overrides_to_judgments
 
 
-def test_majority_outcome_ties_and_all_abstain_are_unresolved() -> None:
-    assert majority_outcome(["equivalent", "equivalent", "worse_minor"]) == "equivalent"
+def test_cross_boundary_and_all_abstain_are_unresolved() -> None:
+    # A non-worse/worse split is a genuine direction-of-harm conflict -> unresolved
+    # (previously plurality-resolved to "equivalent").
+    assert majority_outcome(["equivalent", "equivalent", "worse_minor"]) == "unresolved"
     assert majority_outcome(["equivalent", "worse_minor"]) == "unresolved"
     assert majority_outcome(["unresolved", "unresolved"]) == "unresolved"
+
+
+def test_direction_of_harm_reconciles_same_class_splits() -> None:
+    # Non-worse split: judges agree the candidate did not regress, only on how good
+    # -> conservative representative "equivalent".
+    assert majority_outcome(["candidate_better", "equivalent"]) == "equivalent"
+    # Unanimous candidate_better stays candidate_better.
+    assert majority_outcome(["candidate_better", "candidate_better"]) == "candidate_better"
+    # Worse split: agree on regression, only on how bad -> conservative "worse_minor".
+    assert majority_outcome(["worse_minor", "worse_critical"]) == "worse_minor"
+    assert majority_outcome(["worse_critical", "worse_critical"]) == "worse_critical"
+    # Cross-boundary conflict stays unresolved.
+    assert majority_outcome(["worse_minor", "equivalent"]) == "unresolved"
+    # A single valid vote is unchanged by the reconciliation.
+    assert majority_outcome(["candidate_better"]) == "candidate_better"
+    assert majority_outcome(["worse_minor"]) == "worse_minor"
+    assert majority_outcome(["candidate_better", "unresolved"]) == "candidate_better"
+
+
+def test_human_override_takes_precedence_over_ensemble_rule() -> None:
+    # Ensemble alone would resolve this cross-boundary split to "unresolved"; a human
+    # override to "equivalent" is authoritative.
+    rows = [
+        {"pair_id": "p", "judge": "j1", "outcome": "worse_minor"},
+        {"pair_id": "p", "judge": "j2", "outcome": "equivalent"},
+    ]
+    assert aggregate_judgment_rows(rows)["p"] == "unresolved"
+    overridden = apply_overrides_to_judgments(
+        rows, [{"pair_id": "p", "to_outcome": "equivalent"}]
+    )
+    assert aggregate_judgment_rows(overridden)["p"] == "equivalent"
 
 
 def test_alpha_hits_hand_computed_value() -> None:
@@ -61,10 +95,13 @@ def test_calibration_ingest_produces_exact_expected_accuracies(tmp_path: Path) -
             ("p3", "candidate_better"),
         ],
     )
+    # Votes are within-harm-class so the ensemble resolves under the direction-of-harm
+    # rule (a cross-boundary vote would abstain to "unresolved"). Each judge is wrong
+    # on exactly one pair, keeping judge accuracy at 2/3.
     votes = {
-        "p1": {"j1": "equivalent", "j2": "equivalent", "j3": "worse_minor"},
-        "p2": {"j1": "worse_minor", "j2": "equivalent", "j3": "worse_minor"},
-        "p3": {"j1": "worse_minor", "j2": "candidate_better", "j3": "candidate_better"},
+        "p1": {"j1": "candidate_better", "j2": "candidate_better", "j3": "equivalent"},
+        "p2": {"j1": "worse_minor", "j2": "worse_minor", "j3": "worse_critical"},
+        "p3": {"j1": "candidate_better", "j2": "candidate_better", "j3": "candidate_better"},
     }
 
     result = ingest_calibration_csv(calibration, votes)
