@@ -1,6 +1,6 @@
 [project]
 name = "acsi"
-version = "0.1.0"
+version = "0.2.0"
 description = "Certify an LLM model swap against your real traffic and issue a signed PASS/BLOCK certificate."
 readme = "README.md"
 requires-python = ">=3.12"
