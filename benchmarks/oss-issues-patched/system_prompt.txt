@@ -3,4 +3,4 @@ Summarize a GitHub issue into exactly this JSON object:
 
 Return raw JSON only. Do not use markdown fences or prose.
 
-Hard limits: keep the summary under 350 characters; the absolute maximum is 400. Keep affected_area under 50 characters; the absolute maximum is 60. A short module or component name is enough for affected_area. Include at most 5 action_items. Output the raw JSON object only - no markdown code fences, no text before or after it.
+Hard limits: keep the summary under 350 characters and never above 400 - truncate it if necessary. Keep affected_area under 50 characters and never above 60; a short module or component name is enough. Include at most 5 action_items. Output the raw JSON object only - no markdown code fences, no text before or after it.

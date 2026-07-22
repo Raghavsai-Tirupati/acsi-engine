@@ -14,18 +14,19 @@ The only differences from the unpatched variant are the workload name
 rubric (`fabrication.txt`), models, sampling, assertions, and thresholds are all
 identical, so the two certificates are directly comparable.
 
-## The patch (v2)
+## The patch (v3)
 
 The following paragraph is appended verbatim to the end of `system_prompt.txt`:
 
-> Hard limits: keep the summary under 350 characters; the absolute maximum is 400. Keep affected_area under 50 characters; the absolute maximum is 60. A short module or component name is enough for affected_area. Include at most 5 action_items. Output the raw JSON object only - no markdown code fences, no text before or after it.
+> Hard limits: keep the summary under 350 characters and never above 400 - truncate it if necessary. Keep affected_area under 50 characters and never above 60; a short module or component name is enough. Include at most 5 action_items. Output the raw JSON object only - no markdown code fences, no text before or after it.
 
-**Why v2.** The v1 patch — which stated only the absolute caps (400 / 60
-characters) — already cut candidate regressions from **149 to 18** on this
-workload. This iteration adds *headroom targets*: it asks the model to aim well
-under the caps (350 / 50) rather than right at them, and clarifies that a short
-module or component name suffices for `affected_area`, so borderline outputs stop
-grazing the hard limits.
+**Patch progression** (candidate critical-assertion regressions on this workload):
+
+- **v1** — stated only the absolute caps (400 / 60): **149 → 18**.
+- **v2** — added headroom targets (aim under 350 / 50): **18 → 5**.
+- **v3** — makes the caps explicit *and* actionable (`never above 400 - truncate
+  it if necessary`, `never above 60`) so the model self-corrects instead of
+  grazing the limits: **targets 0**.
 
 ## Reuse the existing corpus — do not re-pull
 
